@@ -308,7 +308,7 @@ class AscendFusedMoE(FusedMoE):
         if moe_comm_method_name in {"alltoallcommimpl", "mc2commimpl"}:
             return final_hidden_states
         else:
-            return tensor_model_parallel_all_reduce(final_hidden_states)
+            return torch.ops.vllm.maybe_pad_and_reduce(final_hidden_states)
 
     def forward_impl(self, hidden_states: torch.Tensor,
                      router_logits: torch.Tensor):
@@ -317,6 +317,10 @@ class AscendFusedMoE(FusedMoE):
         forward_context = get_forward_context()
         moe_comm_method_name = forward_context.moe_comm_method_name
 
+        flashcomm_v1_enabled = forward_context.flashcomm_v1_enabled
+        if flashcomm_v1_enabled:
+            hidden_states = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(hidden_states, True)
+            router_logits = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(router_logits, True)
         forward_context.moe_comm_method = getattr(self, moe_comm_method_name)
 
         hidden_states, router_logits = forward_context.moe_comm_method.prepare(

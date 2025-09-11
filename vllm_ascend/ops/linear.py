@@ -39,6 +39,7 @@ from vllm_ascend.distributed.parallel_state import (get_mlp_tp_group,
 from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, dense_optim_enable,
                                matmul_allreduce_enable, mlp_tp_enable,
                                oproj_tp_enable)
+from vllm.forward_context import get_forward_context
 
 _HCOMM_INFO = None
 
@@ -175,7 +176,7 @@ class AscendRowParallelLinear(RowParallelLinear):
             comm_group = get_tp_group()
             self.forward_type = "matmul_allreduce"
             self.hcomm_info = self.get_hcomm_info(comm_group.device_group)
-        elif dense_optim_enable():
+        elif prefix.find("shared_experts") == -1 and dense_optim_enable():
             comm_group = get_tp_group()
             self.forward_type = "dense_optim"
         else:
@@ -232,6 +233,7 @@ class AscendRowParallelLinear(RowParallelLinear):
 
         if matmul_allreduce_enable():
             self.weight_t = self.weight.t()
+        self.prefix = prefix
 
     @staticmethod
     def get_hcomm_info(group: ProcessGroup) -> str:
@@ -264,6 +266,12 @@ class AscendRowParallelLinear(RowParallelLinear):
         elif self.forward_type == "dense_optim":
             return self._forward_dense_optim(input_)
         else:
+            forward_context = get_forward_context()
+            moe_comm_method_name = forward_context.moe_comm_method_name
+            if moe_comm_method_name in {"allgathercommimpl"} and "shared_experts" in self.prefix:
+                self.reduce_results = False
+            else:
+                self.reduce_results = True
             return super().forward(input_)
 
     # enable custom MLP tensor parallel

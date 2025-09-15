@@ -164,6 +164,9 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # are not freed within this timeout, they will be forcibly released.
     "VLLM_ASCEND_KVCACHE_DELAY_FREE_TIMEOUT":
     lambda: int(os.getenv("VLLM_ASCEND_KVCACHE_DELAY_FREE_TIMEOUT", 250)),
+    # Dynamic Profiling switch.
+    "KINETO_USE_DAEMON_NPU":
+    lambda: bool(int(os.getenv("KINETO_USE_DAEMON_NPU", '0'))),
 }
 
 # end-env-vars-definition

@@ -42,6 +42,7 @@ from vllm.v1.outputs import (EMPTY_MODEL_RUNNER_OUTPUT, AsyncModelRunnerOutput,
                              DraftTokenIds, ModelRunnerOutput)
 from vllm.v1.worker.worker_base import WorkerBase
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import init_ascend_config
 from vllm_ascend.device_allocator.camem import CaMemAllocator
 from vllm_ascend.distributed.parallel_state import init_ascend_model_parallel
@@ -50,6 +51,7 @@ from vllm_ascend.utils import (init_ascend_soc_version,
                                register_ascend_customop, sleep_mode_enabled,
                                try_register_lib)
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+from torch_npu.profiler import dynamic_profile
 
 torch._dynamo.trace_rules.clear_lru_cache()  # noqa: E402
 from torch._dynamo.variables import TorchInGraphFunctionVariable  # noqa: E402
@@ -204,6 +206,8 @@ class NPUWorker(WorkerBase):
         self,
         scheduler_output: "SchedulerOutput",
     ) -> Optional[Union[ModelRunnerOutput, AsyncModelRunnerOutput]]:
+        if envs_ascend.KINETO_USE_DAEMON_NPU:
+            dynamic_profile.step()
         intermediate_tensors = None
         if not get_pp_group().is_first_rank:
             intermediate_tensors = IntermediateTensors(

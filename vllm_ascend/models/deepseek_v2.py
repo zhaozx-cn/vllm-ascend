@@ -68,13 +68,14 @@ from vllm.model_executor.models.utils import (
     make_empty_intermediate_tensors_factory, make_layers, maybe_prefix)
 from vllm.sequence import IntermediateTensors
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.models.layers.mla import AscendMLAModules
 from vllm_ascend.ops.fused_moe import AscendFusedMoE
 from vllm_ascend.quantization.quant_config import AscendLinearMethod
 from vllm_ascend.quantization.w8a8_dynamic import AscendW8A8DynamicLinearMethod
 from vllm_ascend.utils import dispose_tensor
-import vllm_ascend.envs as envs_ascend
+
 
 class CustomDeepseekV2SiluAndMul(SiluAndMul):
 
@@ -649,7 +650,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         self.first_k_dense_replace = config.first_k_dense_replace
         self.tp_group = get_tp_group().device_group
         self.enable_shared_expert_dp = ascend_config.enable_shared_expert_dp
-    
+
     def post_attention_process(self, hidden_states, residual, is_prefill):
         if self.tp_size > 1:
             if is_prefill:
@@ -657,12 +658,14 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 num_padding_tokens = forward_context.pad_size
                 # Pad hidden_states to make it divisible by tp_size to avoid cross-ring AllGatherV on 910B2C
                 if num_padding_tokens > 0:
-                    hidden_states = nn.functional.pad(hidden_states, (0, 0, 0, num_padding_tokens))
+                    hidden_states = nn.functional.pad(
+                        hidden_states, (0, 0, 0, num_padding_tokens))
                 output = get_tp_group().reduce_scatter(hidden_states, dim=0)
                 dispose_tensor(hidden_states)
                 hidden_states = output
                 if self.layer_idx == 0:
-                    residual = nn.functional.pad(residual, (0, 0, 0, num_padding_tokens))
+                    residual = nn.functional.pad(residual,
+                                                 (0, 0, 0, num_padding_tokens))
                     residual_parts = torch.chunk(residual, self.tp_size, dim=0)
                     residual = residual_parts[self.tp_rank]
                 hidden_states, residual = self.post_attention_layernorm(
@@ -673,12 +676,14 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                     hidden_states = hidden_states[:-num_padding_tokens]
             else:
                 hidden_states = tensor_model_parallel_all_reduce(hidden_states)
-                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+                hidden_states, residual = self.post_attention_layernorm(
+                    hidden_states, residual)
             return hidden_states, residual
         else:
-            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+            hidden_states, residual = self.post_attention_layernorm(
+                hidden_states, residual)
             return hidden_states, residual
-    
+
     def post_mlp_process(self, hidden_states, residual, is_prefill):
         if self.tp_size > 1:
             if is_prefill:
@@ -686,7 +691,8 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 num_padding_tokens = forward_context.pad_size
                 # Pad hidden_states to make it divisible by tp_size to avoid cross-ring AllGatherV on 910B2C
                 if num_padding_tokens > 0:
-                    hidden_states = nn.functional.pad(hidden_states, (0, 0, 0, num_padding_tokens))
+                    hidden_states = nn.functional.pad(
+                        hidden_states, (0, 0, 0, num_padding_tokens))
                 output = get_tp_group().reduce_scatter(hidden_states, dim=0)
                 dispose_tensor(hidden_states)
                 hidden_states = output
@@ -694,7 +700,8 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 residual = hidden_states
             else:
                 if isinstance(self.mlp, CustomDeepseekV2MLP):
-                    hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+                    hidden_states = tensor_model_parallel_all_reduce(
+                        hidden_states)
         return hidden_states, residual
 
     def forward(
@@ -741,15 +748,16 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 # The residual is shared by all layers, we only scale it on
                 # first layer.
                 residual *= 1. / self.routed_scaling_factor
-        
+
         if flashcomm1_ds_prefill and is_prefill and self.tp_size > 1:
-            hidden_states, residual = self.post_attention_process(hidden_states, residual, is_prefill)
+            hidden_states, residual = self.post_attention_process(
+                hidden_states, residual, is_prefill)
         else:
             # Fully Connected
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
             hidden_states, residual = self.post_attention_layernorm(
                 hidden_states, residual)
-        
+
         tp_size = get_tensor_model_parallel_world_size()
         if self.enable_shared_expert_dp and (
                 self.layer_idx == self.first_k_dense_replace
@@ -761,14 +769,15 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
             chunk_residual = torch.tensor_split(residual, tp_size, dim=0)
             tp_rank = get_tensor_model_parallel_rank()
             residual = chunk_residual[tp_rank]
-            
+
         if isinstance(self.mlp, CustomDeepseekV2MoE):
             hidden_states = self.mlp(hidden_states, attn_metadata)
         else:
             hidden_states = self.mlp(hidden_states)
 
         if flashcomm1_ds_prefill and is_prefill and self.tp_size > 1:
-            hidden_states, residual = self.post_mlp_process(hidden_states, residual, is_prefill)
+            hidden_states, residual = self.post_mlp_process(
+                hidden_states, residual, is_prefill)
 
         if isinstance(
                 self.mlp,

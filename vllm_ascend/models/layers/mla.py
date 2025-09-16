@@ -136,7 +136,8 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
         if flashcomm1_ds_prefill:
             num_padding_tokens = forward_context.pad_size
             if is_prefill and self.debug_layer_idx > 0:
-                output_shape = (hidden_states.shape[0]*self.tp_size - num_padding_tokens, hidden_states.shape[1])
+                output_shape = (hidden_states.shape[0] * self.tp_size -
+                                num_padding_tokens, hidden_states.shape[1])
             else:
                 output_shape = hidden_states.shape
         output = torch.empty(output_shape,

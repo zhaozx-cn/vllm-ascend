@@ -167,6 +167,8 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # Dynamic Profiling switch.
     "KINETO_USE_DAEMON_NPU":
     lambda: bool(int(os.getenv("KINETO_USE_DAEMON_NPU", '0'))),
+    "VLLM_ASCEND_FC1_ENABLED":
+    lambda: bool(int(os.getenv("VLLM_ASCEND_FC1_ENABLED", '0'))),
 }
 
 # end-env-vars-definition

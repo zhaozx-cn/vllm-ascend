@@ -115,7 +115,10 @@ def set_ascend_forward_context(
             tp_world_size > 1 and \
             num_tokens is not None and num_tokens > 1000
 
-        if flashcomm_v1_enabled:
+        flashcomm1_ds_prefill = envs_ascend.VLLM_ASCEND_FC1_ENABLED and is_deepseek_v3_r1 and num_tokens is not None
+        forward_context.flashcomm1_ds_prefill = flashcomm1_ds_prefill
+
+        if flashcomm_v1_enabled or flashcomm1_ds_prefill:
             pad_size = (tp_world_size -
                         (num_tokens % tp_world_size)) % tp_world_size
             forward_context.pad_size = pad_size

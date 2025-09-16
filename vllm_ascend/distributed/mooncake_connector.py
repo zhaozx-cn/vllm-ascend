@@ -701,6 +701,7 @@ class MooncakeConnectorScheduler:
             remote_engine_id=self.engine_id,
             remote_host=self.side_channel_host,
             remote_port=self.side_channel_port,
+            last_token_id=request.output_token_ids[-1],
         )
 
     def get_finished_count(self) -> Optional[int]:

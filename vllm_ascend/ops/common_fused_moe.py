@@ -35,6 +35,9 @@ from vllm_ascend.ops.moe.moe_comm_method import (AllGatherCommImpl,
                                                  AlltoAllCommImpl, MC2CommImpl)
 from vllm_ascend.ops.moe.token_dispatcher import setup_token_dispatchers
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, is_310p
+import torch.nn.functional as F
+from vllm.distributed import (get_tensor_model_parallel_rank,
+                              get_tensor_model_parallel_world_size)
 
 original_unquantized_fused_moe_init_func = UnquantizedFusedMoEMethod.__init__
 
@@ -305,10 +308,18 @@ class AscendFusedMoE(FusedMoE):
         """
         forward_context = get_forward_context()
         moe_comm_method_name = forward_context.moe_comm_method_name
+        flashcomm_v1_enabled = forward_context.flashcomm_v1_enabled
         if moe_comm_method_name in {"alltoallcommimpl", "mc2commimpl"}:
+            if flashcomm_v1_enabled:
+                pad_size = forward_context.pad_size
+                if pad_size > 0:
+                    final_hidden_states = F.pad(final_hidden_states, (0, 0, 0, pad_size))
+                tp_size = get_tensor_model_parallel_world_size()
+                tp_rank = get_tensor_model_parallel_rank()
+                final_hidden_states = torch.chunk(final_hidden_states, tp_size, dim=0)[tp_rank]
             return final_hidden_states
         else:
-            return tensor_model_parallel_all_reduce(final_hidden_states)
+            return torch.ops.vllm.maybe_pad_and_reduce(final_hidden_states)
 
     def forward_impl(self, hidden_states: torch.Tensor,
                      router_logits: torch.Tensor):

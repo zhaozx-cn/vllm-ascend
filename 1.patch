@@ -1,0 +1,247 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 1a140ce..f383d6d 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -12,9 +12,9 @@ requires = [
+     "scipy",
+     "setuptools>=64",
+     "setuptools-scm>=8",
+-    "torch-npu==2.7.1.dev20250724",
+-    "torch>=2.7.1",
+-    "torchvision",
++    #"torch-npu==2.7.1.dev20250724",
++    #"torch>=2.7.1",
++    #"torchvision",
+     "wheel",
+     "msgpack",
+     "quart",
+diff --git a/requirements.txt b/requirements.txt
+index 7808e85..f422081 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -10,8 +10,8 @@ pyyaml
+ scipy
+ setuptools>=64
+ setuptools-scm>=8
+-torch>=2.7.1
+-torchvision
++#torch>=2.7.1
++#torchvision
+ wheel
+ 
+ # requirements for disaggregated prefill
+@@ -22,6 +22,6 @@ quart
+ numba
+ 
+ # Install torch_npu
+---pre
+---extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+-torch-npu==2.7.1.dev20250724
++#--pre
++#--extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
++#torch-npu==2.7.1.dev20250724
+diff --git a/vllm_ascend/ascend_forward_context.py b/vllm_ascend/ascend_forward_context.py
+index f4a7887..a896ae4 100644
+--- a/vllm_ascend/ascend_forward_context.py
++++ b/vllm_ascend/ascend_forward_context.py
+@@ -87,10 +87,14 @@ def set_ascend_forward_context(
+         is_deepseek_v3_r1 = hasattr(
+             vllm_config.model_config.hf_config, 'n_routed_experts'
+         ) and vllm_config.model_config.hf_config.n_routed_experts == 256
++        is_glm4_moe = hasattr(
++            vllm_config.model_config.hf_config, 'n_routed_experts'
++        ) and vllm_config.model_config.hf_config.model_type == 'glm4_moe'
+         fused_moe_state = _get_fused_moe_state(ep_size, with_prefill,
+                                                is_deepseek_v3_r1)
+         forward_context.fused_moe_state = fused_moe_state
+         forward_context.in_profile_run = in_profile_run
++        forward_context.is_glm4_moe = is_glm4_moe
+ 
+         from vllm_ascend.ops.moe.token_dispatcher import get_token_dispatcher
+         dispatcher_name = _moe_method_to_dispatcher[moe_comm_method]
+diff --git a/vllm_ascend/models/glm4_moe.py b/vllm_ascend/models/glm4_moe.py
+index 9e1ca4b..46f3d0e 100644
+--- a/vllm_ascend/models/glm4_moe.py
++++ b/vllm_ascend/models/glm4_moe.py
+@@ -76,7 +76,7 @@ class CustomGlm4MoE(Glm4MoE):
+             final_hidden_states = (
+                 self.experts.maybe_all_reduce_tensor_model_parallel(
+                     final_hidden_states))
+-        return final_hidden_states.view(num_tokens, hidden_dim)
++        return final_hidden_states.view(-1, hidden_dim)
+ 
+ 
+ class CustomGlm4MoeDecoderLayer(nn.Module):
+@@ -133,9 +133,9 @@ class CustomGlm4MoeDecoderLayer(nn.Module):
+                                   prefix=f"{prefix}.mlp")
+ 
+         self.input_layernorm = RMSNorm(config.hidden_size,
+-                                       eps=config.rms_norm_eps)
++                                       eps=config.rms_norm_eps,prefix=f"{prefix}.input_layernorm")
+         self.post_attention_layernorm = RMSNorm(config.hidden_size,
+-                                                eps=config.rms_norm_eps)
++                                                eps=config.rms_norm_eps,prefix=f"{prefix}.post_attention_layernorm")
+         self.routed_scaling_factor = config.routed_scaling_factor
+ 
+     def forward(
+@@ -197,7 +197,7 @@ class CustomGlm4MoeModel(Glm4MoeModel):
+             prefix=f"{prefix}.layers")
+ 
+         if get_pp_group().is_last_rank:
+-            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
++            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps, prefix=f"{prefix}.norm")
+         else:
+             self.norm = PPMissingLayer()
+         self.make_empty_intermediate_tensors = (
+@@ -267,4 +267,4 @@ class CustomGlm4MoeForCausalLM(Glm4MoeForCausalLM):
+         self.num_local_physical_experts = example_moe.n_local_physical_experts
+         self.num_routed_experts = example_moe.n_routed_experts
+         self.num_shared_experts = example_moe.n_shared_experts
+-        self.num_redundant_experts = example_moe.n_redundant_experts
+\ No newline at end of file
++        self.num_redundant_experts = example_moe.n_redundant_experts
+diff --git a/vllm_ascend/ops/common_fused_moe.py b/vllm_ascend/ops/common_fused_moe.py
+index 773684e..2a55c7d 100644
+--- a/vllm_ascend/ops/common_fused_moe.py
++++ b/vllm_ascend/ops/common_fused_moe.py
+@@ -35,6 +35,9 @@ from vllm_ascend.ops.moe.moe_comm_method import (AllGatherCommImpl,
+                                                  AlltoAllCommImpl, MC2CommImpl)
+ from vllm_ascend.ops.moe.token_dispatcher import setup_token_dispatchers
+ from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, is_310p
++import torch.nn.functional as F
++from vllm.distributed import (get_tensor_model_parallel_rank,
++                              get_tensor_model_parallel_world_size)
+ 
+ original_unquantized_fused_moe_init_func = UnquantizedFusedMoEMethod.__init__
+ 
+@@ -305,10 +308,18 @@ class AscendFusedMoE(FusedMoE):
+         """
+         forward_context = get_forward_context()
+         moe_comm_method_name = forward_context.moe_comm_method_name
++        flashcomm_v1_enabled = forward_context.flashcomm_v1_enabled
+         if moe_comm_method_name in {"alltoallcommimpl", "mc2commimpl"}:
++            if flashcomm_v1_enabled:
++                pad_size = forward_context.pad_size
++                if pad_size > 0:
++                    final_hidden_states = F.pad(final_hidden_states, (0, 0, 0, pad_size))
++                tp_size = get_tensor_model_parallel_world_size()
++                tp_rank = get_tensor_model_parallel_rank()
++                final_hidden_states = torch.chunk(final_hidden_states, tp_size, dim=0)[tp_rank]
+             return final_hidden_states
+         else:
+-            return tensor_model_parallel_all_reduce(final_hidden_states)
++            return torch.ops.vllm.maybe_pad_and_reduce(final_hidden_states)
+ 
+     def forward_impl(self, hidden_states: torch.Tensor,
+                      router_logits: torch.Tensor):
+diff --git a/vllm_ascend/ops/layernorm.py b/vllm_ascend/ops/layernorm.py
+index ccd031c..cc39db9 100644
+--- a/vllm_ascend/ops/layernorm.py
++++ b/vllm_ascend/ops/layernorm.py
+@@ -19,6 +19,7 @@ from typing import Optional, Tuple, Union, cast
+ 
+ import torch
+ from vllm.model_executor.layers.layernorm import RMSNorm
++from vllm.forward_context import get_forward_context
+ 
+ 
+ class AddRMSNormW8A8Quant(RMSNorm):
+@@ -54,14 +55,27 @@ class AddRMSNormW8A8Quant(RMSNorm):
+                 self.layer.aclnn_input_offset,
+                 epsilon=self.variance_epsilon)
+             torch.ops.vllm.maybe_wait_prefetch_done(x)
++            is_glm4_moe = get_forward_context().is_glm4_moe
++            x = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(x, is_glm4_moe)
+             return x, residual
+ 
+         x, residual = torch_npu.npu_rms_norm(x, self.weight,
+                                              self.variance_epsilon)
+         return x
+ 
+-
++cnt = 0
+ class AscendRMSNorm(RMSNorm):
++    def __init__(
++        self,
++        hidden_size: int,
++        eps: float = 1e-6,
++        var_hidden_size: Optional[int] = None,
++        has_weight: bool = True,
++        dtype: Optional[torch.dtype] = None,
++        prefix: str = None,
++    ) -> None:
++        super().__init__(hidden_size, eps, var_hidden_size, has_weight, dtype)
++        self.prefix = prefix
+ 
+     def forward_oot(
+         self,
+@@ -69,10 +83,11 @@ class AscendRMSNorm(RMSNorm):
+         residual: Optional[torch.Tensor] = None,
+     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+         import torch_npu
+-
+         from vllm_ascend.utils import is_310p
+         if residual is not None:
++            global cnt
+             residual = torch.ops.vllm.maybe_chunk_residual(x, residual)
++            cnt = cnt + 1
+             assert x.size(0) == residual.size(0)
+             if is_310p():
+                 orig_dtype = residual.dtype
+@@ -84,6 +99,8 @@ class AscendRMSNorm(RMSNorm):
+                 x, _, residual = torch_npu.npu_add_rms_norm(
+                     x, residual, self.weight, self.variance_epsilon)
+             torch.ops.vllm.maybe_wait_prefetch_done(x)
++            is_glm4_moe = get_forward_context().is_glm4_moe
++            x = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(x, is_glm4_moe and "post_attention_layernorm" in self.prefix)
+             return x, residual
+ 
+         x, residual = torch_npu.npu_rms_norm(x, self.weight,
+diff --git a/vllm_ascend/ops/linear.py b/vllm_ascend/ops/linear.py
+index 8ffce39..47d9ba7 100644
+--- a/vllm_ascend/ops/linear.py
++++ b/vllm_ascend/ops/linear.py
+@@ -33,7 +33,7 @@ from vllm.model_executor.layers.linear import (  # noqa
+ from vllm.model_executor.layers.quantization.base_config import \
+     QuantizationConfig
+ from vllm.model_executor.utils import set_weight_attrs
+-
++from vllm.forward_context import get_forward_context
+ from vllm_ascend.distributed.parallel_state import (get_mlp_tp_group,
+                                                     get_otp_group)
+ from vllm_ascend.utils import (dense_optim_enable, matmul_allreduce_enable,
+@@ -151,7 +151,7 @@ class AscendRowParallelLinear(RowParallelLinear):
+             comm_group = get_tp_group()
+             self.forward_type = "matmul_allreduce"
+             self.hcomm_info = self.get_hcomm_info(comm_group.device_group)
+-        elif dense_optim_enable():
++        elif prefix.find("shared_experts") == -1 and dense_optim_enable():
+             comm_group = get_tp_group()
+             self.forward_type = "dense_optim"
+         else:
+@@ -403,12 +403,13 @@ class AscendMergedColumnParallelLinear(MergedColumnParallelLinear):
+         if prefix.find("gate_up_proj") != -1 and mlp_tp_enable():
+             comm_group = get_mlp_tp_group()
+             self.forward_type = "mlp_tp"
+-        elif dense_optim_enable():
++        elif prefix.find("shared_experts") == -1 and dense_optim_enable():
+             comm_group = get_tp_group()
+             self.forward_type = "dense_optim"
+         else:
+             comm_group = get_tp_group()
+             self.forward_type = "normal_tp"
++        self.prefix = prefix
+         self.comm_group = comm_group
+         # TODO: check for disable_tp
+         self.tp_rank = comm_group.rank_in_group
+@@ -469,7 +470,9 @@ class AscendMergedColumnParallelLinear(MergedColumnParallelLinear):
+         # Matrix multiply.
+         assert self.quant_method is not None
+ 
+-        input_ = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(input_, True)
++        is_glm4_moe = get_forward_context().is_glm4_moe
++        if not is_glm4_moe:
++            input_ = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(input_, True)
+         output_parallel = self.quant_method.apply(self, input_, bias)
+ 
+         if self.gather_output:

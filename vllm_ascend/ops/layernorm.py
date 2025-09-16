@@ -19,6 +19,7 @@ from typing import Optional, Tuple, Union, cast
 
 import torch
 from vllm.model_executor.layers.layernorm import RMSNorm
+from vllm.forward_context import get_forward_context
 
 
 class AddRMSNormW8A8Quant(RMSNorm):
@@ -54,14 +55,27 @@ class AddRMSNormW8A8Quant(RMSNorm):
                 self.layer.aclnn_input_offset,
                 epsilon=self.variance_epsilon)
             torch.ops.vllm.maybe_wait_prefetch_done(x)
+            is_glm4_moe = get_forward_context().is_glm4_moe
+            x = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(x, is_glm4_moe)
             return x, residual
 
         x, residual = torch_npu.npu_rms_norm(x, self.weight,
                                              self.variance_epsilon)
         return x
 
-
+cnt = 0
 class AscendRMSNorm(RMSNorm):
+    def __init__(
+        self,
+        hidden_size: int,
+        eps: float = 1e-6,
+        var_hidden_size: Optional[int] = None,
+        has_weight: bool = True,
+        dtype: Optional[torch.dtype] = None,
+        prefix: str = None,
+    ) -> None:
+        super().__init__(hidden_size, eps, var_hidden_size, has_weight, dtype)
+        self.prefix = prefix
 
     def forward_oot(
         self,
@@ -69,10 +83,11 @@ class AscendRMSNorm(RMSNorm):
         residual: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         import torch_npu
-
         from vllm_ascend.utils import is_310p
         if residual is not None:
+            global cnt
             residual = torch.ops.vllm.maybe_chunk_residual(x, residual)
+            cnt = cnt + 1
             assert x.size(0) == residual.size(0)
             if is_310p():
                 orig_dtype = residual.dtype
@@ -84,6 +99,8 @@ class AscendRMSNorm(RMSNorm):
                 x, _, residual = torch_npu.npu_add_rms_norm(
                     x, residual, self.weight, self.variance_epsilon)
             torch.ops.vllm.maybe_wait_prefetch_done(x)
+            is_glm4_moe = get_forward_context().is_glm4_moe
+            x = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(x, is_glm4_moe and "post_attention_layernorm" in self.prefix)
             return x, residual
 
         x, residual = torch_npu.npu_rms_norm(x, self.weight,

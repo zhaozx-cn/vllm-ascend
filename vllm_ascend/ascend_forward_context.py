@@ -87,10 +87,14 @@ def set_ascend_forward_context(
         is_deepseek_v3_r1 = hasattr(
             vllm_config.model_config.hf_config, 'n_routed_experts'
         ) and vllm_config.model_config.hf_config.n_routed_experts == 256
+        is_glm4_moe = hasattr(
+            vllm_config.model_config.hf_config, 'n_routed_experts'
+        ) and vllm_config.model_config.hf_config.model_type == 'glm4_moe'
         fused_moe_state = _get_fused_moe_state(ep_size, with_prefill,
                                                is_deepseek_v3_r1)
         forward_context.fused_moe_state = fused_moe_state
         forward_context.in_profile_run = in_profile_run
+        forward_context.is_glm4_moe = is_glm4_moe
 
         from vllm_ascend.ops.moe.token_dispatcher import get_token_dispatcher
         dispatcher_name = _moe_method_to_dispatcher[moe_comm_method]

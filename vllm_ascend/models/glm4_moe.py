@@ -76,7 +76,7 @@ class CustomGlm4MoE(Glm4MoE):
             final_hidden_states = (
                 self.experts.maybe_all_reduce_tensor_model_parallel(
                     final_hidden_states))
-        return final_hidden_states.view(num_tokens, hidden_dim)
+        return final_hidden_states.view(-1, hidden_dim)
 
 
 class CustomGlm4MoeDecoderLayer(nn.Module):
@@ -133,9 +133,9 @@ class CustomGlm4MoeDecoderLayer(nn.Module):
                                   prefix=f"{prefix}.mlp")
 
         self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps=config.rms_norm_eps)
+                                       eps=config.rms_norm_eps,prefix=f"{prefix}.input_layernorm")
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                eps=config.rms_norm_eps)
+                                                eps=config.rms_norm_eps,prefix=f"{prefix}.post_attention_layernorm")
         self.routed_scaling_factor = config.routed_scaling_factor
 
     def forward(
@@ -197,7 +197,7 @@ class CustomGlm4MoeModel(Glm4MoeModel):
             prefix=f"{prefix}.layers")
 
         if get_pp_group().is_last_rank:
-            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps, prefix=f"{prefix}.norm")
         else:
             self.norm = PPMissingLayer()
         self.make_empty_intermediate_tensors = (

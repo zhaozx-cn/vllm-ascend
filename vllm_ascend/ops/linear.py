@@ -33,7 +33,7 @@ from vllm.model_executor.layers.linear import (  # noqa
 from vllm.model_executor.layers.quantization.base_config import \
     QuantizationConfig
 from vllm.model_executor.utils import set_weight_attrs
-
+from vllm.forward_context import get_forward_context
 from vllm_ascend.distributed.parallel_state import (get_mlp_tp_group,
                                                     get_otp_group)
 from vllm_ascend.utils import (dense_optim_enable, matmul_allreduce_enable,
@@ -151,7 +151,7 @@ class AscendRowParallelLinear(RowParallelLinear):
             comm_group = get_tp_group()
             self.forward_type = "matmul_allreduce"
             self.hcomm_info = self.get_hcomm_info(comm_group.device_group)
-        elif dense_optim_enable():
+        elif prefix.find("shared_experts") == -1 and dense_optim_enable():
             comm_group = get_tp_group()
             self.forward_type = "dense_optim"
         else:
@@ -403,12 +403,13 @@ class AscendMergedColumnParallelLinear(MergedColumnParallelLinear):
         if prefix.find("gate_up_proj") != -1 and mlp_tp_enable():
             comm_group = get_mlp_tp_group()
             self.forward_type = "mlp_tp"
-        elif dense_optim_enable():
+        elif prefix.find("shared_experts") == -1 and dense_optim_enable():
             comm_group = get_tp_group()
             self.forward_type = "dense_optim"
         else:
             comm_group = get_tp_group()
             self.forward_type = "normal_tp"
+        self.prefix = prefix
         self.comm_group = comm_group
         # TODO: check for disable_tp
         self.tp_rank = comm_group.rank_in_group
@@ -469,7 +470,9 @@ class AscendMergedColumnParallelLinear(MergedColumnParallelLinear):
         # Matrix multiply.
         assert self.quant_method is not None
 
-        input_ = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(input_, True)
+        is_glm4_moe = get_forward_context().is_glm4_moe
+        if not is_glm4_moe:
+            input_ = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(input_, True)
         output_parallel = self.quant_method.apply(self, input_, bias)
 
         if self.gather_output:

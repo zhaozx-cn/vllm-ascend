@@ -63,7 +63,6 @@ class AddRMSNormW8A8Quant(RMSNorm):
                                              self.variance_epsilon)
         return x
 
-cnt = 0
 class AscendRMSNorm(RMSNorm):
     def __init__(
         self,
@@ -85,9 +84,7 @@ class AscendRMSNorm(RMSNorm):
         import torch_npu
         from vllm_ascend.utils import is_310p
         if residual is not None:
-            global cnt
             residual = torch.ops.vllm.maybe_chunk_residual(x, residual)
-            cnt = cnt + 1
             assert x.size(0) == residual.size(0)
             if is_310p():
                 orig_dtype = residual.dtype

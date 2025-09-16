@@ -409,7 +409,6 @@ class AscendMergedColumnParallelLinear(MergedColumnParallelLinear):
         else:
             comm_group = get_tp_group()
             self.forward_type = "normal_tp"
-        self.prefix = prefix
         self.comm_group = comm_group
         # TODO: check for disable_tp
         self.tp_rank = comm_group.rank_in_group

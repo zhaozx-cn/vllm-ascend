@@ -171,6 +171,8 @@ class AscendMLAMetadataBuilder:
 
     # _attn_mask_builder = None
     def __init__(self,
+                 kv_cache_spec,
+                 layer_names,
                  vllm_config: VllmConfig,
                  device: torch.device,
                  metadata_cls: Optional[AscendMLAMetadata] = None):
@@ -265,6 +267,7 @@ class AscendMLAMetadataBuilder:
 
     def build(
         self,
+        common_prefix_len: int,
         common_attn_metadata: AscendCommonAttentionMetadata,
         model: nn.Module,
     ) -> AscendMLAMetadata:
@@ -376,11 +379,12 @@ class AscendMLAMetadataBuilder:
 
         decode_metadata = None
         if num_decodes > 0:
+            # Notice that num_decodes != num_decode_tokens in SpecDecoding Scenario
             actual_seq_lengths_q = query_start_loc[1:num_decodes + 1].tolist()
             max_seq_lens = seq_lens[:num_decodes].max().item()
-            seq_lens = seq_lens[:num_decode_tokens]
+            seq_lens = seq_lens[:num_decodes]
             input_positions = input_positions[:num_decode_tokens]
-            block_table = block_table[:num_decode_tokens, ...]
+            block_table = block_table[:num_decodes, ...]
             seq_lens_list = seq_lens.tolist()
 
             cos = self.cos_cache[input_positions].unsqueeze(  # type: ignore

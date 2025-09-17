@@ -97,6 +97,7 @@ class MoETokenDispatcher(ABC):
                        shared_gate_up: Optional[torch.Tensor] = None,
                        shared_dequant_scale: Optional[torch.Tensor] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
+                       pertoken_scale: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False):
         raise NotImplementedError("Dispatch function not implemented.")
@@ -209,6 +210,7 @@ class TokenDispatcherWithMC2(MoETokenDispatcher):
                        shared_gate_up: Optional[torch.Tensor] = None,
                        shared_dequant_scale: Optional[torch.Tensor] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
+                       pertoken_scale: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False):
         self.with_quant = with_quant
@@ -349,6 +351,7 @@ class TokenDispatcherWithAllGather(MoETokenDispatcher):
                        shared_gate_up: Optional[torch.Tensor] = None,
                        shared_dequant_scale: Optional[torch.Tensor] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
+                       pertoken_scale: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False):
         self.with_quant = with_quant
@@ -380,17 +383,32 @@ class TokenDispatcherWithAllGather(MoETokenDispatcher):
             last_expert_idx = self.num_experts_local
             global_num_experts = self.num_experts_local
 
-        sorted_hidden_states, self.expanded_row_idx, expert_tokens, pertoken_scale = (
-            torch_npu.npu_moe_init_routing_v2(
-                hidden_states,
-                topk_ids,
-                active_num=num_tokens * self.top_k,
-                expert_num=global_num_experts,
-                expert_tokens_num_type=1,
-                expert_tokens_num_flag=True,
-                active_expert_range=[first_expert_idx, last_expert_idx],
-                quant_mode=1 if self.with_quant else -1,
-            ))
+        if pertoken_scale is not None:
+            sorted_hidden_states, self.expanded_row_idx, expert_tokens, pertoken_scale = (
+                torch_npu.npu_moe_init_routing_v2(
+                    hidden_states,
+                    topk_ids,
+                    scale=pertoken_scale,
+                    active_num=num_tokens * self.top_k,
+                    expert_num=global_num_experts,
+                    expert_tokens_num_type=1,
+                    expert_tokens_num_flag=True,
+                    active_expert_range=[first_expert_idx, last_expert_idx],
+                    quant_mode=-1,
+                ))
+        else:
+            sorted_hidden_states, self.expanded_row_idx, expert_tokens, _ = (
+                torch_npu.npu_moe_init_routing_v2(
+                    hidden_states,
+                    topk_ids,
+                    active_num=num_tokens * self.top_k,
+                    expert_num=global_num_experts,
+                    expert_tokens_num_type=1,
+                    expert_tokens_num_flag=True,
+                    active_expert_range=[first_expert_idx, last_expert_idx],
+                    quant_mode=-1,
+                ))
+
         expert_tokens = expert_tokens.to(torch.int64)
         group_list_type = 1  # `count` mode
         return {
@@ -436,6 +454,7 @@ class UnquantizedTokenDispatcherWithFusedExpertsMoge(MoETokenDispatcher):
                        shared_gate_up: Optional[torch.Tensor] = None,
                        shared_dequant_scale: Optional[torch.Tensor] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
+                       pertoken_scale: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False):
         self.apply_router_weight_on_input = apply_router_weight_on_input
@@ -548,6 +567,7 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher):
                        shared_gate_up: Optional[torch.Tensor] = None,
                        shared_dequant_scale: Optional[torch.Tensor] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
+                       pertoken_scale: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False):
         self.with_quant = with_quant

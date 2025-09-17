@@ -633,6 +633,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
             )
+            self.is_moe_layer = True
         else:
             self.mlp = CustomDeepseekV2MLP(
                 hidden_size=config.hidden_size,
@@ -642,6 +643,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
             )
+            self.is_moe_layer = False
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
@@ -670,10 +672,11 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                     residual = residual_parts[self.tp_rank]
                 hidden_states, residual = self.post_attention_layernorm(
                     hidden_states, residual)
-                hidden_states = get_tp_group().all_gather(hidden_states, 0)
-                # unpad
-                if num_padding_tokens > 0:
-                    hidden_states = hidden_states[:-num_padding_tokens]
+                if not envs_ascend.VLLM_ASCEND_GATEDP_ENABLED or not self.is_moe_layer:
+                    hidden_states = get_tp_group().all_gather(hidden_states, 0)
+                    # unpad
+                    if num_padding_tokens > 0:
+                        hidden_states = hidden_states[:-num_padding_tokens]
             else:
                 hidden_states = tensor_model_parallel_all_reduce(hidden_states)
                 hidden_states, residual = self.post_attention_layernorm(
@@ -769,7 +772,6 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
             chunk_residual = torch.tensor_split(residual, tp_size, dim=0)
             tp_rank = get_tensor_model_parallel_rank()
             residual = chunk_residual[tp_rank]
-
         if isinstance(self.mlp, CustomDeepseekV2MoE):
             hidden_states = self.mlp(hidden_states, attn_metadata)
         else:

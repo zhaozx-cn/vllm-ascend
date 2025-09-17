@@ -247,7 +247,7 @@ class AscendW8A8DynamicFusedMoEMethod:
         if enable_force_load_balance:
             topk_ids = torch.randint_like(topk_ids, 0, global_num_experts)
 
-        topk_weights = topk_weights.to(x.dtype)
+        topk_weights = topk_weights.to(router_logits.dtype)
 
         return unified_fused_experts_eager(
             hidden_states=x,
@@ -265,6 +265,7 @@ class AscendW8A8DynamicFusedMoEMethod:
             shared_gate_up=shared_gate_up,
             shared_dequant_scale=shared_dequant_scale,
             mc2_mask=kwargs.get("mc2_mask", None),
+            pertoken_scale=kwargs.get("pertoken_scale", None),
             with_quant=True,
             fusion_mlp=True)
 

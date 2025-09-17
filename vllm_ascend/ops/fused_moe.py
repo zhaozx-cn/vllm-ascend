@@ -48,6 +48,7 @@ from vllm_ascend.ops.sequence_parallel import MetadataForPadding
 from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, dispose_tensor,
                                get_all_reduce_merge_state,
                                get_rm_router_logits_state, is_310p)
+import vllm_ascend.envs as envs_ascend
 
 
 def unified_fused_experts_eager(hidden_states: torch.Tensor,
@@ -67,6 +68,7 @@ def unified_fused_experts_eager(hidden_states: torch.Tensor,
                                 shared_gate_up: Optional[Any] = None,
                                 shared_dequant_scale: Optional[Any] = None,
                                 mc2_mask: Optional[torch.Tensor] = None,
+                                pertoken_scale: Optional[torch.Tensor] = None,
                                 apply_router_weight_on_input: bool = False,
                                 with_quant: bool = False,
                                 fusion_mlp: bool = False):
@@ -85,7 +87,8 @@ def unified_fused_experts_eager(hidden_states: torch.Tensor,
         shared_dequant_scale=shared_dequant_scale,
         mc2_mask=mc2_mask,
         apply_router_weight_on_input=apply_router_weight_on_input,
-        with_quant=with_quant)
+        with_quant=with_quant,
+        pertoken_scale=pertoken_scale)
 
     expert_output = unified_apply_mlp(
         hidden_states=results["hidden_states"],
@@ -382,6 +385,15 @@ class AscendFusedMoE(FusedMoE):
             end = cu_tokens_across_dp_cpu[idx]
             get_dp_group().broadcast(buffer[start:end, :], idx)
         return buffer
+    
+    def expert_parallel_allgather_with_unpadding(self, partial_tensor: torch.Tensor):
+        forward_context = get_forward_context()
+        num_padding_tokens = forward_context.pad_size
+        partial_tensor = get_tp_group().all_gather(partial_tensor, 0)
+        # unpad
+        if num_padding_tokens > 0:
+            partial_tensor = partial_tensor[:-num_padding_tokens]
+        return partial_tensor
 
     def forward(self,
                 hidden_states: torch.Tensor,
@@ -408,10 +420,6 @@ class AscendFusedMoE(FusedMoE):
         mc2_mask = forward_context.mc2_mask
         # For w8a8 dynamic we can do npu_dynamic_quant and gate in parallel.
         quantized_x_for_share, dynamic_scale_for_share = None, None
-
-        if shared_experts:
-            # When all_reduce_merge is in progress, shared_experts does not do all_reduce in mlp, but waits until shared_experts+router_experts are completed before doing all_reduce
-            shared_hidden_states = shared_experts(hidden_states)
 
         enable_sp = _metadata_for_padding is not None and _metadata_for_padding.not_dummy_and_is_prefill
         tp_size = get_tensor_model_parallel_world_size()
@@ -479,7 +487,25 @@ class AscendFusedMoE(FusedMoE):
                 else:
                     router_logits = self.naive_multicast(
                         router_logits, cu_tokens_across_dp_cpu)
+        pertoken_scale = None
+        if envs_ascend.VLLM_ASCEND_GATEDP_ENABLED:
+            hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(
+                hidden_states)
+            # TODO:delete clone() and fix bug in QuantBatchMatmul
+            pertoken_scale = self.expert_parallel_allgather_with_unpadding(
+                pertoken_scale).clone()
+            hidden_states = self.expert_parallel_allgather_with_unpadding(
+                hidden_states)
+            router_logits = self.expert_parallel_allgather_with_unpadding(
+                router_logits)
 
+        if shared_experts:
+            if pertoken_scale is not None:
+                # When all_reduce_merge is in progress, shared_experts does not do all_reduce in mlp, but waits until shared_experts+router_experts are completed before doing all_reduce
+                shared_hidden_states = shared_experts((hidden_states, pertoken_scale))
+            else:
+                shared_hidden_states = shared_experts(hidden_states)
+        
         # Matrix multiply.
         e_hidden_states = self.quant_method.apply(
             layer=self,
@@ -504,6 +530,7 @@ class AscendFusedMoE(FusedMoE):
             token_dispatcher=self.token_dispatcher,
             quantized_x_for_share=quantized_x_for_share,
             dynamic_scale_for_share=dynamic_scale_for_share,
+            pertoken_scale=pertoken_scale
         )
 
         if shared_experts:

@@ -452,7 +452,7 @@ class AscendFusedMoE(FusedMoE):
                 mc2_mask = chunk_mc2_mask[tp_rank]
 
         if self.dp_size > 1:
-            if fused_moe_state == FusedMoEState.AllGather:
+            if fused_moe_state == FusedMoEState.AllGather or fused_moe_state == FusedMoEState.AllGatherEP:
                 # NOTE: When in torchair graph, it has been padded in model_runner_v1
                 max_tokens_across_dp = forward_context.max_tokens_across_dp
                 if num_tokens < max_tokens_across_dp:
@@ -532,7 +532,7 @@ class AscendFusedMoE(FusedMoE):
                     e_hidden_states)
                 final_hidden_states = final_hidden_states[start:end, :]
                 dispose_tensor(e_hidden_states)
-            elif fused_moe_state == FusedMoEState.AllGather:
+            elif fused_moe_state == FusedMoEState.AllGather or fused_moe_state == FusedMoEState.AllGatherEP:
                 final_hidden_states = get_dp_group().reduce_scatter(
                     e_hidden_states, 0)
                 final_hidden_states = final_hidden_states[:num_tokens]

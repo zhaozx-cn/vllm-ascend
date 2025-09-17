@@ -1727,7 +1727,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             logprobs_tensors = sampler_output.logprobs_tensors
             logprobs_lists = logprobs_tensors.tolists() \
                 if logprobs_tensors is not None else None
-            
+
             logprobs_tensors_for_trace = None
             if hasattr(sampler_output, 'logprobs_tensors_for_trace') and \
                sampler_output.logprobs_tensors_for_trace is not None:

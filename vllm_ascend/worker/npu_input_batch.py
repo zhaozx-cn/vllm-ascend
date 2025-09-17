@@ -703,7 +703,7 @@ class InputBatch:
                        self.allowed_token_ids_mask, num_reqs)
             allowed_token_ids_mask = self.allowed_token_ids_mask[:num_reqs]
 
-        return SamplingMetadata(
+        ret =  SamplingMetadata(
             temperature=temperature,
             all_greedy=self.all_greedy,
             all_random=self.all_random,
@@ -711,7 +711,6 @@ class InputBatch:
             top_k=None if self.no_top_k else self.top_k[:num_reqs],
             generators=self.generators,
             max_num_logprobs=self.max_num_logprobs,
-            max_num_logprobs_in_trace=self.max_num_logprobs_in_trace,
             prompt_token_ids=prompt_token_ids,
             frequency_penalties=self.frequency_penalties[:num_reqs],
             presence_penalties=self.presence_penalties[:num_reqs],
@@ -722,6 +721,9 @@ class InputBatch:
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
         )
+        if hasattr(ret, "max_num_logprobs_in_trace"):
+            ret.max_num_logprobs_in_trace = self.max_num_logprobs_in_trace
+        return ret
 
     @property
     def pooling_metadata(self) -> PoolingMetadata:
@@ -812,7 +814,7 @@ class InputBatch:
     @property
     def max_num_logprobs(self) -> Optional[int]:
         return max(self.num_logprobs.values()) if self.num_logprobs else None
-    
+
     @property
     def max_num_logprobs_in_trace(self) -> Optional[int]:
         return max(self.trace_logprobs.values()) if self.trace_logprobs else None

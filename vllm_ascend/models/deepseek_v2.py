@@ -896,11 +896,11 @@ class CustomDeepseekV2Model(nn.Module):
             })
         forward_context = get_forward_context()
         is_prefill = forward_context.with_prefill
-        pad_size = forward_context.pad_size
         flashcomm1_ds_prefill = forward_context.flashcomm1_ds_prefill
         if flashcomm1_ds_prefill and is_prefill and self.tp_size > 1:
             hidden_states = self.norm(hidden_states)
             hidden_states = get_tp_group().all_gather(hidden_states, 0)
+            pad_size = forward_context.pad_size
             if pad_size > 0:
                 hidden_states = hidden_states[:-pad_size]
         else:

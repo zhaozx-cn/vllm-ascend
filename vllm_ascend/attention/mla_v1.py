@@ -187,7 +187,14 @@ class AscendMLAMetadataBuilder:
                            self.block_size - 1) // self.block_size
         self.chunked_prefill_enabled = scheduler_config.chunked_prefill_enabled
 
+        self.speculative_config = vllm_config.speculative_config
         self.decode_threshold = 1
+        if self.speculative_config:
+            spec_token_num = self.speculative_config.num_speculative_tokens
+            self.decode_threshold += spec_token_num
+            assert self.decode_threshold <= 16, f"decode_threshold exceeded \
+                npu_fused_infer_attention_score TND layout's limit of 16, \
+                got {self.decode_threshold}"
 
         if self.chunked_prefill_enabled:
             self.chunked_prefill_workspace_size = min(
@@ -275,7 +282,6 @@ class AscendMLAMetadataBuilder:
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         query_start_loc = common_attn_metadata.query_start_loc
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu
-        # TODO(xyx): remove the if condition after mla supports torch mode speculative decoding
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = \
             split_decodes_and_prefills(common_attn_metadata, decode_threshold=self.decode_threshold)
         assert num_decodes + num_prefills == num_reqs
@@ -789,7 +795,7 @@ class AscendMLAImpl(MLAAttentionImpl):
         # npu_kv_rmsnorm_rope_cache needs [B, N, S, D]
         kv_no_split = kv_no_split.view(
             B, N, S, self.kv_lora_rank + self.qk_rope_head_dim)
-        cache_mode = "PA_BLK_NZ" if self.enable_kv_nz else "PA"
+        cache_mode = "PA_NZ" if self.enable_kv_nz else "PA"
         _, _, k_pe, k_nope = torch_npu.npu_kv_rmsnorm_rope_cache(
             kv_no_split,
             self.kv_a_layernorm.weight,

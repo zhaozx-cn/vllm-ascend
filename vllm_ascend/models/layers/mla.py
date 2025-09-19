@@ -29,6 +29,7 @@ from vllm.config import CacheConfig
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.mla import MultiHeadLatentAttention
 from vllm.model_executor.layers.quantization import QuantizationConfig
+import vllm_ascend.envs as envs_ascend
 
 
 @dataclass
@@ -146,5 +147,72 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
         output = self.mla_attn.impl.forward(hidden_states, kv_cache,
                                             forward_context.attn_metadata,
                                             need_gather_q_kv, output)
+        output = output.view(-1, output_shape[-1])
+        return output
+
+    def _forward_mla_preprocess(
+            self,
+            positions: torch.Tensor,
+            hidden_states: torch.Tensor,
+            kv_cache: Optional[torch.Tensor] = None,
+            attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
+        forward_context = get_forward_context()
+        if kv_cache is None:
+            kv_cache = self.mla_attn.kv_cache[forward_context.virtual_engine]
+        num_tokens = hidden_states.shape[0]
+        need_gather_q_kv = False
+        if self.enable_shared_expert_dp and self.debug_layer_idx > self.first_k_dense_replace and self.debug_layer_idx < self.layers:
+            # Simulate all gather to calculate output shape
+            num_tokens = num_tokens * self.tp_size
+            need_gather_q_kv = True
+        is_prefill = forward_context.with_prefill
+        flashcomm1_ds_prefill = forward_context.flashcomm1_ds_prefill
+        if is_prefill and flashcomm1_ds_prefill and self.debug_layer_idx > 0:
+            need_gather_q_kv = True
+        kv_c_or_hidden_states, kv_no_split = self.mla_attn.impl._mla_preprocess_comm(
+            hidden_states, need_gather_q_kv)
+        return kv_c_or_hidden_states, hidden_states, kv_cache, kv_no_split, num_tokens
+
+    def _forward_mla_attn(self,
+                          hidden_states: torch.Tensor,
+                          kv_c,
+                          num_tokens,
+                          kv_cache: Optional[torch.Tensor] = None,
+                          kv_no_split: Optional[torch.Tensor] = None,
+                          attn_metadata: Optional[AttentionMetadata] = None):
+
+        if not self.enable_shared_expert_dp or self.debug_layer_idx < self.first_k_dense_replace:
+            output_shape = hidden_states.shape
+        else:
+            rows = num_tokens // self.tp_size
+            if num_tokens % self.tp_size:
+                rows += 1
+            output_shape = (rows, hidden_states.shape[1])
+        forward_context = get_forward_context()
+        is_prefill = forward_context.with_prefill
+        if forward_context.flashcomm1_ds_prefill:
+            num_padding_tokens = forward_context.pad_size
+            if is_prefill and self.debug_layer_idx > 0:
+                output_shape = (hidden_states.shape[0] * self.tp_size -
+                                num_padding_tokens, hidden_states.shape[1])
+            else:
+                output_shape = hidden_states.shape
+
+        need_gather_q_kv = False
+        if self.enable_shared_expert_dp and self.debug_layer_idx > self.first_k_dense_replace and self.debug_layer_idx < self.layers:
+            # Simulate all gather to calculate output shape
+            num_tokens = num_tokens * self.tp_size
+            need_gather_q_kv = True
+        is_prefill = forward_context.with_prefill
+        flashcomm1_ds_prefill = forward_context.flashcomm1_ds_prefill
+        if is_prefill and flashcomm1_ds_prefill and self.debug_layer_idx > 0:
+            need_gather_q_kv = True
+        output = torch.empty(output_shape,
+                             dtype=hidden_states.dtype,
+                             device=hidden_states.device)
+        output = self.mla_attn.impl.forward(kv_c, kv_cache,
+                                            forward_context.attn_metadata,
+                                            need_gather_q_kv, output, True,
+                                            kv_no_split)
         output = output.view(-1, output_shape[-1])
         return output

@@ -877,29 +877,9 @@ class AscendMLAImpl(MLAAttentionImpl):
             actual_seq_lengths_kv=decode_meta.seq_lens_list,
             actual_seq_lengths=actual_seq_lengths)
 
-        current_ms_metadata = get_multistream_comm_context()
-        if current_ms_metadata is None:
-            return self._v_up_proj(attn_output)
-        else:
-            current_ms_metadata.before_comm_event.record()
-            with torch.npu.stream(current_ms_metadata.comm_stream):
-                current_ms_metadata.before_comm_event.wait()
-                return self._v_up_proj(attn_output)
+        return self._v_up_proj(attn_output)
 
-    def _mla_preprocess(self, hidden_states, kv_cache, attn_metadata,
-                        need_gather_q_kv):
-        # MLA Preprocess:
-        # 1. Perform q_a_proj and q_a_layernorm to obtain q_c
-        # 2. Perform kv_a_proj_with_mqa to obtain kv_no_split
-        # 3. If need_gather_q_kv, perform all_gather.
-        # 4. Preprocess decode tokens, write kv cache and get:
-        # decode_ql_nope, decode_q_pe, decode_k_pe, decode_k_nope
-        # 5. Preprocess prefill tokens, write kv cache and get:
-        # prefill_q_nope, prefill_q_pe, prefill_k_nope, prefill_k_pe, prefill_value
-        has_decode = attn_metadata.num_decodes > 0
-        has_prefill = attn_metadata.num_prefills > 0
-        num_decode_tokens = attn_metadata.num_decode_tokens
-        num_actual_tokens = attn_metadata.num_actual_tokens
+    def _mla_preprocess_comm(self, hidden_states, need_gather_q_kv):
         if self.q_a_proj is not None:
             npu_prefetch(self.q_a_proj.weight,
                          hidden_states,
@@ -914,6 +894,45 @@ class AscendMLAImpl(MLAAttentionImpl):
         if need_gather_q_kv:
             q_c = get_tp_group().all_gather(q_c, 0)
             kv_no_split = get_tp_group().all_gather(kv_no_split, 0)
+        return q_c, kv_no_split
+
+    def _mla_preprocess(self,
+                        hidden_states,
+                        kv_cache,
+                        attn_metadata,
+                        need_gather_q_kv,
+                        enable_dbo=False,
+                        kv_no_split=None):
+        # MLA Preprocess:
+        # 1. Perform q_a_proj and q_a_layernorm to obtain q_c
+        # 2. Perform kv_a_proj_with_mqa to obtain kv_no_split
+        # 3. If need_gather_q_kv, perform all_gather.
+        # 4. Preprocess decode tokens, write kv cache and get:
+        # decode_ql_nope, decode_q_pe, decode_k_pe, decode_k_nope
+        # 5. Preprocess prefill tokens, write kv cache and get:
+        # prefill_q_nope, prefill_q_pe, prefill_k_nope, prefill_k_pe, prefill_value
+        has_decode = attn_metadata.num_decodes > 0
+        has_prefill = attn_metadata.num_prefills > 0
+        num_decode_tokens = attn_metadata.num_decode_tokens
+        num_actual_tokens = attn_metadata.num_actual_tokens
+        if not enable_dbo:
+            if self.q_a_proj is not None:
+                npu_prefetch(self.q_a_proj.weight,
+                             hidden_states,
+                             enabled=self.enable_prefetch)
+                ckq = self.q_a_proj(hidden_states)[0]
+                q_c = self.q_a_layernorm(ckq)
+            else:
+                q_c = hidden_states
+
+            kv_no_split = self.kv_a_proj_with_mqa(hidden_states)[0]
+            # Process for shared_expert_dp
+            if need_gather_q_kv:
+                q_c = get_tp_group().all_gather(q_c, 0)
+                kv_no_split = get_tp_group().all_gather(kv_no_split, 0)
+        else:
+            q_c = hidden_states
+
         decode_preprocess_res = None
         prefill_preprocess_res = None
         # Preprocess for decode tokens
@@ -967,6 +986,8 @@ class AscendMLAImpl(MLAAttentionImpl):
         attn_metadata: M,
         need_gather_q_kv: bool = False,
         output: Optional[torch.Tensor] = None,
+        enable_dbo: bool = False,
+        kv_no_split: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         assert output is not None, "Output tensor must be provided."
         if attn_metadata is None:
@@ -988,7 +1009,8 @@ class AscendMLAImpl(MLAAttentionImpl):
 
         # MLA Preprocess
         decode_preprocess_res, prefill_preprocess_res = self._mla_preprocess(
-            hidden_states, kv_cache, attn_metadata, need_gather_q_kv)
+            hidden_states, kv_cache, attn_metadata, need_gather_q_kv,
+            enable_dbo, kv_no_split)
 
         if decode_preprocess_res is not None:
             # MLA Preprocess for decoding
@@ -998,13 +1020,8 @@ class AscendMLAImpl(MLAAttentionImpl):
                                                  decode_preprocess_res.k_pe,
                                                  kv_cache[0].shape[1],
                                                  attn_metadata)
-            current_ms_metadata = get_multistream_comm_context()
-            if current_ms_metadata is not None:
-                with torch.npu.stream(current_ms_metadata.comm_stream):
-                    o_proj_input[:num_decode_tokens] = output_decode
-                    current_ms_metadata.after_comm_event.record()
-            else:
-                o_proj_input[:num_decode_tokens] = output_decode
+
+            o_proj_input[:num_decode_tokens] = output_decode
 
         if prefill_preprocess_res is not None:
             # FIX: aicore move should be also placed on the comm stream in dbo,
@@ -1014,36 +1031,19 @@ class AscendMLAImpl(MLAAttentionImpl):
                 prefill_preprocess_res.q_nope, prefill_preprocess_res.q_pe,
                 prefill_preprocess_res.k_nope, prefill_preprocess_res.k_pe,
                 prefill_preprocess_res.value, kv_cache, attn_metadata)
-            current_ms_metadata = get_multistream_comm_context()
-            if current_ms_metadata is not None:
-                with torch.npu.stream(current_ms_metadata.comm_stream):
-                    o_proj_input[num_decode_tokens:] = output_prefill
-                    current_ms_metadata.after_comm_event.record()
-            else:
-                o_proj_input[num_decode_tokens:] = output_prefill
-        # O proj
-        current_ms_metadata = get_multistream_comm_context()
-        MAX_O_PROJ_PREFETCH_SIZE = 16 * 1024 * 1024
-        if current_ms_metadata is None:
-            npu_prefetch(self.o_proj.weight,
-                         o_proj_input,
-                         max_size=MAX_O_PROJ_PREFETCH_SIZE,
-                         enabled=self.enable_prefetch)
 
-            output[...] = self.o_proj(
-                o_proj_input,
-                is_prefill=prefill_preprocess_res is not None,
-                is_force_scatter=self.enable_shared_expert_dp)[0]
-        else:
-            with torch.npu.stream(current_ms_metadata.comm_stream):
-                npu_prefetch(self.o_proj.weight,
-                             o_proj_input,
-                             max_size=MAX_O_PROJ_PREFETCH_SIZE,
-                             enabled=self.enable_prefetch)
-                output[...] = self.o_proj(
-                    o_proj_input,
-                    is_prefill=prefill_preprocess_res is not None,
-                    is_force_scatter=self.enable_shared_expert_dp)[0]
-                current_ms_metadata.after_comm_event.record()
+            o_proj_input[num_decode_tokens:] = output_prefill
+        # O proj
+        MAX_O_PROJ_PREFETCH_SIZE = 16 * 1024 * 1024
+        npu_prefetch(self.o_proj.weight,
+                     o_proj_input,
+                     max_size=MAX_O_PROJ_PREFETCH_SIZE,
+                     enabled=self.enable_prefetch)
+
+        output[...] = self.o_proj(
+            o_proj_input,
+            is_prefill=prefill_preprocess_res is not None,
+            is_force_scatter=self.enable_shared_expert_dp)[0]
+
         del o_proj_input
         return output_padded

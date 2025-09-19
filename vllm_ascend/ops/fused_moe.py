@@ -385,8 +385,9 @@ class AscendFusedMoE(FusedMoE):
             end = cu_tokens_across_dp_cpu[idx]
             get_dp_group().broadcast(buffer[start:end, :], idx)
         return buffer
-    
-    def expert_parallel_allgather_with_unpadding(self, partial_tensor: torch.Tensor):
+
+    def expert_parallel_allgather_with_unpadding(self,
+                                                 partial_tensor: torch.Tensor):
         forward_context = get_forward_context()
         num_padding_tokens = forward_context.pad_size
         partial_tensor = get_tp_group().all_gather(partial_tensor, 0)
@@ -488,7 +489,7 @@ class AscendFusedMoE(FusedMoE):
                     router_logits = self.naive_multicast(
                         router_logits, cu_tokens_across_dp_cpu)
         pertoken_scale = None
-        if envs_ascend.VLLM_ASCEND_GATEDP_ENABLED:
+        if envs_ascend.VLLM_ASCEND_GATEDP_ENABLED and is_prefill:
             hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(
                 hidden_states)
             # TODO:delete clone() and fix bug in QuantBatchMatmul
@@ -502,10 +503,11 @@ class AscendFusedMoE(FusedMoE):
         if shared_experts:
             if pertoken_scale is not None:
                 # When all_reduce_merge is in progress, shared_experts does not do all_reduce in mlp, but waits until shared_experts+router_experts are completed before doing all_reduce
-                shared_hidden_states = shared_experts((hidden_states, pertoken_scale))
+                shared_hidden_states = shared_experts(
+                    (hidden_states, pertoken_scale))
             else:
                 shared_hidden_states = shared_experts(hidden_states)
-        
+
         # Matrix multiply.
         e_hidden_states = self.quant_method.apply(
             layer=self,
@@ -530,8 +532,7 @@ class AscendFusedMoE(FusedMoE):
             token_dispatcher=self.token_dispatcher,
             quantized_x_for_share=quantized_x_for_share,
             dynamic_scale_for_share=dynamic_scale_for_share,
-            pertoken_scale=pertoken_scale
-        )
+            pertoken_scale=pertoken_scale)
 
         if shared_experts:
             if isinstance(e_hidden_states, tuple):
@@ -583,15 +584,134 @@ class AscendFusedMoE(FusedMoE):
 
     # ----------------------------------------- TBO-related --------------------------------------------
 
-    def _forward_ms_fused_moe_comp(
+    def _forward_fused_moe_pre_comm(
+            self,
+            hidden_states: torch.Tensor,
+            router_logits: torch.Tensor,
+            gate=None,
+            replace_allreduce: bool = False,
+            _metadata_for_padding: Optional[MetadataForPadding] = None):
+        assert self.quant_method is not None
+
+        num_tokens, hidden_size = hidden_states.shape
+
+        forward_context = get_forward_context()
+        fused_moe_state = forward_context.fused_moe_state
+        mc2_mask = forward_context.mc2_mask
+
+        enable_sp = _metadata_for_padding is not None and _metadata_for_padding.not_dummy_and_is_prefill
+        tp_size = get_tensor_model_parallel_world_size()
+        if enable_sp:
+            tp_rank = get_tensor_model_parallel_rank()
+            mc2_mask_sp = _metadata_for_padding.mc2_mask if _metadata_for_padding is not None else forward_context.mc2_mask
+            chunk_mc2_mask = torch.tensor_split(mc2_mask_sp, tp_size, dim=0)
+            mc2_mask = chunk_mc2_mask[tp_rank]
+            replace_allreduce = True
+
+        if (fused_moe_state not in [
+                FusedMoEState.AllGather, FusedMoEState.AllGatherEP,
+                FusedMoEState.NaiveMulticast
+        ] and not replace_allreduce):
+            if fused_moe_state in {FusedMoEState.MC2}:
+                padding_size = forward_context.padded_num_tokens
+            else:
+                # TODO: Determine if we can remove the padding
+                padding_size = tp_size
+            if num_tokens < padding_size and not self.enable_shared_expert_dp:
+                hidden_states = nn.functional.pad(
+                    hidden_states, (0, 0, 0, padding_size - num_tokens))
+                router_logits = nn.functional.pad(
+                    router_logits, (0, 0, 0, padding_size - num_tokens))
+            if tp_size > 1:
+                tp_rank = get_tensor_model_parallel_rank()
+                if not self.enable_shared_expert_dp:
+                    chunk_hidden_states = torch.tensor_split(hidden_states,
+                                                             tp_size,
+                                                             dim=0)
+                    chunk_router_logits = torch.tensor_split(router_logits,
+                                                             tp_size,
+                                                             dim=0)
+                    hidden_states = chunk_hidden_states[tp_rank]
+                    router_logits = chunk_router_logits[tp_rank]
+
+                chunk_mc2_mask = torch.tensor_split(mc2_mask, tp_size, dim=0)
+                mc2_mask = chunk_mc2_mask[tp_rank]
+
+        if self.dp_size > 1:
+            if fused_moe_state == FusedMoEState.AllGather or fused_moe_state == FusedMoEState.AllGatherEP:
+                # NOTE: When in torchair graph, it has been padded in model_runner_v1
+                max_tokens_across_dp = forward_context.max_tokens_across_dp
+                if num_tokens < max_tokens_across_dp:
+                    hidden_states = nn.functional.pad(
+                        hidden_states,
+                        (0, 0, 0, max_tokens_across_dp - num_tokens))
+                    if not self.rm_router_logits:
+                        router_logits = nn.functional.pad(
+                            router_logits,
+                            (0, 0, 0, max_tokens_across_dp - num_tokens))
+                hidden_states = get_dp_group().all_gather(hidden_states, 0)
+                if self.rm_router_logits:
+                    router_logits, _ = gate(hidden_states)
+                else:
+                    router_logits = get_dp_group().all_gather(router_logits, 0)
+
+            elif fused_moe_state == FusedMoEState.NaiveMulticast:
+                cu_tokens_across_dp_cpu = get_forward_context(
+                ).dp_metadata.cu_tokens_across_dp_cpu
+                hidden_states = self.naive_multicast(hidden_states,
+                                                     cu_tokens_across_dp_cpu)
+                if self.rm_router_logits:
+                    router_logits, _ = gate(hidden_states)
+                else:
+                    router_logits = self.naive_multicast(
+                        router_logits, cu_tokens_across_dp_cpu)
+        pertoken_scale = None
+        if envs_ascend.VLLM_ASCEND_GATEDP_ENABLED:
+            hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(
+                hidden_states)
+            # TODO:delete clone() and fix bug in QuantBatchMatmul
+            pertoken_scale = self.expert_parallel_allgather_with_unpadding(
+                pertoken_scale).clone()
+            hidden_states = self.expert_parallel_allgather_with_unpadding(
+                hidden_states)
+            router_logits = self.expert_parallel_allgather_with_unpadding(
+                router_logits)
+
+        return hidden_states, router_logits, pertoken_scale, num_tokens
+
+    def _forward_fused_moe_post_comp(
         self,
         hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
         is_prefill: bool,
-        real_top_k,
         enable_force_load_balance: bool = False,
+        top_k: Optional[int] = None,
+        shared_experts: Optional[Any] = None,
+        pertoken_scale: Optional[torch.Tensor] = None,
+        replace_allreduce: bool = False,
+        chunk_hidden_states: torch.Tensor = None,
+        num_tokens: int = 0,
     ):
-        hidden_states = self.quant_method.apply(
+        if top_k:
+            real_top_k = top_k
+        else:
+            real_top_k = self.top_k
+        forward_context = get_forward_context()
+        fused_moe_state = forward_context.fused_moe_state
+        mc2_mask = forward_context.mc2_mask
+        tp_size = get_tensor_model_parallel_world_size()
+        # For w8a8 dynamic we can do npu_dynamic_quant and gate in parallel.
+        quantized_x_for_share, dynamic_scale_for_share = None, None
+        if shared_experts:
+            if pertoken_scale is not None:
+                # When all_reduce_merge is in progress, shared_experts does not do all_reduce in mlp, but waits until shared_experts+router_experts are completed before doing all_reduce
+                shared_hidden_states = shared_experts(
+                    (hidden_states, pertoken_scale))
+            else:
+                shared_hidden_states = shared_experts(hidden_states)
+
+        # Matrix multiply.
+        e_hidden_states = self.quant_method.apply(
             layer=self,
             x=hidden_states,
             router_logits=router_logits,
@@ -607,6 +727,62 @@ class AscendFusedMoE(FusedMoE):
             e_score_correction_bias=self.e_score_correction_bias,
             is_prefill=is_prefill,
             enable_force_load_balance=enable_force_load_balance,
-        )
+            log2phy=self.log2phy,
+            global_redundant_expert_num=self.global_redundant_expert_num,
+            shared_experts=None,
+            mc2_mask=mc2_mask,
+            token_dispatcher=self.token_dispatcher,
+            quantized_x_for_share=quantized_x_for_share,
+            dynamic_scale_for_share=dynamic_scale_for_share,
+            pertoken_scale=pertoken_scale)
 
-        return hidden_states
+        if shared_experts:
+            if isinstance(e_hidden_states, tuple):
+                e_hidden_states, shared_hidden_states = e_hidden_states
+
+        if (fused_moe_state not in [
+                FusedMoEState.AllGather, FusedMoEState.AllGatherEP,
+                FusedMoEState.NaiveMulticast
+        ] and not replace_allreduce and not self.enable_shared_expert_dp):
+            if tp_size > 1:
+                dist.all_gather(list(chunk_hidden_states), e_hidden_states,
+                                self.tp_group)
+                final_hidden_states = torch.cat(chunk_hidden_states, dim=0)
+                dispose_tensor(e_hidden_states)
+            else:
+                final_hidden_states = e_hidden_states
+            padding_size = tp_size
+            if num_tokens < padding_size:
+                final_hidden_states = final_hidden_states[:num_tokens]
+        elif self.dp_size > 1 and not self.enable_shared_expert_dp:
+            if fused_moe_state == FusedMoEState.NaiveMulticast:
+                cu_tokens_across_dp_cpu = get_forward_context(
+                ).dp_metadata.cu_tokens_across_dp_cpu
+                start = 0 if self.dp_rank == 0 else cu_tokens_across_dp_cpu[
+                    self.dp_rank - 1]
+                end = cu_tokens_across_dp_cpu[self.dp_rank]
+                final_hidden_states = get_dp_group().all_reduce(
+                    e_hidden_states)
+                final_hidden_states = final_hidden_states[start:end, :]
+                dispose_tensor(e_hidden_states)
+            elif fused_moe_state == FusedMoEState.AllGather or fused_moe_state == FusedMoEState.AllGatherEP:
+                final_hidden_states = get_dp_group().reduce_scatter(
+                    e_hidden_states, 0)
+                final_hidden_states = final_hidden_states[:num_tokens]
+                dispose_tensor(e_hidden_states)
+            else:
+                final_hidden_states = e_hidden_states
+        else:
+            final_hidden_states = e_hidden_states
+
+        if tp_size > 1 and not self.all_reduce_merge and fused_moe_state in [
+                FusedMoEState.AllGather, FusedMoEState.AllGatherEP,
+                FusedMoEState.NaiveMulticast
+        ]:
+            final_hidden_states = tensor_model_parallel_all_reduce(
+                final_hidden_states)
+
+        if shared_experts:
+            return final_hidden_states, shared_hidden_states
+        else:
+            return final_hidden_states

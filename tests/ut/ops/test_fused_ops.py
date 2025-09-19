@@ -357,22 +357,6 @@ class TestAscendFusedMoe:
         else:
             assert output.shape == (num_tokens, 32)
 
-    def test_forward_ms_fused_moe_comp(self, mock_dist_env,
-                                       default_moe_config):
-        inputs = torch.randn(5, 32)
-        router_logits = torch.randn(5, 8)
-        moe = AscendFusedMoE(**default_moe_config)
-
-        moe.quant_method = MockQuantMethod(None, 5)
-        output = moe._forward_ms_fused_moe_comp(inputs,
-                                                router_logits,
-                                                is_prefill=False,
-                                                real_top_k=1)
-
-        moe.quant_method.apply.assert_called_once()
-
-        assert output.shape == (5, 32)
-
 
 class TestAscendUnquantizedFusedMoEMethod:
 

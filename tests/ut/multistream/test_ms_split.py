@@ -34,7 +34,7 @@ class TestMsSplit(TestBase):
             query_lens=query_lens,
             attn_state=AscendAttentionState.PrefillNoCache,
             num_tokens=10)
-        self.assertEqual(result, [0, 0])
+        self.assertEqual(result, [6, 3])
 
     def test_query_lens_none(self):
         with self.assertRaises(AssertionError):

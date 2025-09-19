@@ -308,7 +308,7 @@ class AscendRowParallelLinear(RowParallelLinear):
 
         # otp-specific: Combine partial results across devices
         output = self.comm_group.reduce_scatter(output_parallel, dim=0)
-
+        output = output.view(input_.shape[0], self.output_size)
         # Handle bias return based on configuration
         output_bias = self.bias if self.skip_bias_add else None
         if not self.return_bias:

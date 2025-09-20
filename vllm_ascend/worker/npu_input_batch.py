@@ -376,7 +376,8 @@ class InputBatch:
                 self.num_logprobs[req_id] = (self.vocab_size
                                              if sampling_params.logprobs == -1
                                              else sampling_params.logprobs)
-            logprobs_in_trace = getattr(sampling_params, "logprobs_in_trace", None)
+            logprobs_in_trace = getattr(sampling_params, "logprobs_in_trace",
+                                        None)
             if logprobs_in_trace is not None:
                 self.trace_logprobs[req_id] = logprobs_in_trace
             if sampling_params.prompt_logprobs is not None:
@@ -817,7 +818,8 @@ class InputBatch:
 
     @property
     def max_num_logprobs_in_trace(self) -> Optional[int]:
-        return max(self.trace_logprobs.values()) if self.trace_logprobs else None
+        return max(
+            self.trace_logprobs.values()) if self.trace_logprobs else None
 
     @property
     def no_prompt_logprob(self) -> bool:

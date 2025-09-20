@@ -140,6 +140,9 @@ class AscendW8A8LinearMethod:
                                                       ACL_FORMAT_FRACTAL_NZ)
         layer.weight_scale.data = torch.flatten(layer.weight_scale.data)
         layer.weight_offset.data = torch.flatten(layer.weight_offset.data)
+        torch._dynamo.mark_static(layer.aclnn_input_scale)
+        torch._dynamo.mark_static(layer.aclnn_input_scale_reciprocal)
+        torch._dynamo.mark_static(layer.aclnn_input_offset)
 
 
 class AscendW8A8FusedMoEMethod:

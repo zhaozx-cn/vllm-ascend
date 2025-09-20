@@ -125,7 +125,7 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
             need_gather_q_kv = True
         is_prefill = forward_context.with_prefill
         flashcomm1_ds_prefill = forward_context.flashcomm1_ds_prefill
-        if is_prefill and flashcomm1_ds_prefill and self.debug_layer_idx > 0:
+        if is_prefill and flashcomm1_ds_prefill and self.debug_layer_idx > 0 and self.debug_layer_idx < self.layers:
             need_gather_q_kv = True
         if not self.enable_shared_expert_dp or self.debug_layer_idx < self.first_k_dense_replace:
             output_shape = hidden_states.shape
@@ -136,7 +136,7 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
             output_shape = (rows, hidden_states.shape[1])
         if flashcomm1_ds_prefill:
             num_padding_tokens = forward_context.pad_size
-            if is_prefill and self.debug_layer_idx > 0:
+            if is_prefill and self.debug_layer_idx > 0 and self.debug_layer_idx < self.layers:
                 output_shape = (hidden_states.shape[0] * self.tp_size -
                                 num_padding_tokens, hidden_states.shape[1])
             else:

@@ -587,6 +587,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         model_config: ModelConfig,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        is_mtp_block: bool = False,
     ) -> None:
         nn.Module.__init__(self)
         self.hidden_size = config.hidden_size
@@ -652,6 +653,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         self.first_k_dense_replace = config.first_k_dense_replace
         self.tp_group = get_tp_group().device_group
         self.enable_shared_expert_dp = ascend_config.enable_shared_expert_dp
+        self.is_mtp_block = is_mtp_block
 
     def post_attention_process(self, hidden_states, residual, is_prefill):
         if self.tp_size > 1:
@@ -665,7 +667,7 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
                 output = get_tp_group().reduce_scatter(hidden_states, dim=0)
                 dispose_tensor(hidden_states)
                 hidden_states = output
-                if self.layer_idx == 0:
+                if self.layer_idx == 0 or self.layer_idx >= self.layers:
                     residual = nn.functional.pad(residual,
                                                  (0, 0, 0, num_padding_tokens))
                     residual_parts = torch.chunk(residual, self.tp_size, dim=0)
@@ -720,7 +722,9 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
         forward_context = get_forward_context()
         is_prefill = forward_context.with_prefill
         flashcomm1_ds_prefill = forward_context.flashcomm1_ds_prefill
+        dispose_residual = False
         if residual is None:
+            dispose_residual = self.is_mtp_block
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
@@ -741,6 +745,9 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
             kv_cache=kv_cache,
             attn_metadata=attn_metadata,
         )
+
+        if dispose_residual:
+            ori_residual = residual
 
         if hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
@@ -772,6 +779,10 @@ class CustomDeepseekV2DecoderLayer(DeepseekV2DecoderLayer):
             chunk_residual = torch.tensor_split(residual, tp_size, dim=0)
             tp_rank = get_tensor_model_parallel_rank()
             residual = chunk_residual[tp_rank]
+
+        if dispose_residual:
+            dispose_tensor(ori_residual)
+
         if isinstance(self.mlp, CustomDeepseekV2MoE):
             hidden_states = self.mlp(hidden_states, attn_metadata)
         else:
@@ -843,6 +854,7 @@ class CustomDeepseekV2Model(nn.Module):
                 model_config=model_config,
                 cache_config=cache_config,
                 quant_config=quant_config,
+                is_mtp_block=False,
             ),
             prefix=f"{prefix}.layers")
 

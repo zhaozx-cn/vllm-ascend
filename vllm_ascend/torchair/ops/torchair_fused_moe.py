@@ -197,7 +197,6 @@ def torchair_fused_experts_with_mc2(
             "x_active_mask": mc2_mask,
         })
     kwargs_mc2.update(stage3_kwargs)
-
     hidden_states = torch_npu.npu_moe_distribute_combine_v2(
         **kwargs_mc2
     ) if enable_dispatch_v2 else torch_npu.npu_moe_distribute_combine(
@@ -1041,7 +1040,8 @@ class TorchairAscendFusedMoE(FusedMoE):
             self.local_num_experts, self.expert_map = determine_expert_map(
                 self.ep_size,
                 get_ep_group().rank_in_group, self.global_num_experts)
-
+        if self.expert_map is not None:
+            torch._dynamo.mark_static(self.expert_map)
         self.torchair_graph_enabled = ascend_config.torchair_graph_config.enabled
         self.enable_multistream_moe = \
             ascend_config.torchair_graph_config.enable_multistream_moe and \

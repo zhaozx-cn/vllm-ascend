@@ -257,6 +257,7 @@ class NPUPlatform(Platform):
 
         # If ascend_scheduler_config is enabled,
         # extents original scheduler_config to use AscendScheduler.
+        import vllm_ascend.envs as envs_ascend
         if ascend_config.ascend_scheduler_config.enabled:
             from vllm_ascend.core.schedule_config import AscendSchedulerConfig
             ascend_scheduler_config = AscendSchedulerConfig.initialize_from_config(

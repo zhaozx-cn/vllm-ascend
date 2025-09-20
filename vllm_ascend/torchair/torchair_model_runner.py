@@ -43,8 +43,7 @@ from vllm_ascend.torchair.utils import (
 from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_ND, ACL_FORMAT_FRACTAL_NZ,
                                is_310p, get_ascend_soc_version,
                                AscendSocVersion)
-from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
-
+from vllm_ascend.worker.model_runner_v1 import MtpProposer, NPUModelRunner
 
 class NPUTorchairModelRunner(NPUModelRunner):
 
@@ -214,6 +213,8 @@ class NPUTorchairModelRunner(NPUModelRunner):
             # runtime errors caused by configuration mismatches in graph mode.
             torch._dynamo.reset()
             self.torchair_compiled_models.clear()
+            if isinstance(self.drafter, MtpProposer):
+                self.drafter.torchair_compiled_models.clear()
         if self.use_cached_npu_graph:
             logger.info(
                 "Loading torchair graph cache, this usually takes %.1f~%.1f mins.",

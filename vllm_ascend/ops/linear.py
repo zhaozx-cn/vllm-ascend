@@ -269,7 +269,10 @@ class AscendRowParallelLinear(RowParallelLinear):
         self,
         input_: torch.Tensor,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, Optional[Parameter]]]:
-
+        otp_size = get_otp_group().world_size
+        # Hint for dynamo so that dynamo will trace self.comm_group.world_size as constant
+        assert otp_size == self.comm_group.world_size
+        assert otp_size == self.tp_size
         if self.input_is_parallel:
             input_parallel = input_
         else:
@@ -308,7 +311,6 @@ class AscendRowParallelLinear(RowParallelLinear):
 
         # otp-specific: Combine partial results across devices
         output = self.comm_group.reduce_scatter(output_parallel, dim=0)
-        output = output.view(input_.shape[0], self.output_size)
         # Handle bias return based on configuration
         output_bias = self.bias if self.skip_bias_add else None
         if not self.return_bias:

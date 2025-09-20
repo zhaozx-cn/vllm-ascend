@@ -213,6 +213,9 @@ class AscendMLAMetadataBuilder:
         self.rope_dim = self.model_config.hf_text_config.qk_rope_head_dim
         self.cos_cache = None
         self.sin_cache = None
+        self.is_kv_producer = self.vllm_config.kv_transfer_config is not None \
+                                        and self.vllm_config.kv_transfer_config.is_kv_producer
+
 
     def reorder_batch(self, input_batch: "InputBatch",
                       scheduler_output: "SchedulerOutput") -> bool:
@@ -226,6 +229,9 @@ class AscendMLAMetadataBuilder:
         prefills = []
 
         for i, req_id in enumerate(input_batch.req_ids):
+            if self.is_kv_producer:
+                prefills.append(i)
+                continue
             num_tokens = scheduler_output.num_scheduled_tokens[req_id]
             if num_tokens <= self.decode_threshold:
                 decodes.append(i)
@@ -378,9 +384,9 @@ class AscendMLAMetadataBuilder:
         if num_decodes > 0:
             actual_seq_lengths_q = query_start_loc[1:num_decodes + 1].tolist()
             max_seq_lens = seq_lens[:num_decodes].max().item()
-            seq_lens = seq_lens[:num_decode_tokens]
+            seq_lens = seq_lens[:num_decodes]
             input_positions = input_positions[:num_decode_tokens]
-            block_table = block_table[:num_decode_tokens, ...]
+            block_table = block_table[:num_decodes, ...]
             seq_lens_list = seq_lens.tolist()
 
             cos = self.cos_cache[input_positions].unsqueeze(  # type: ignore

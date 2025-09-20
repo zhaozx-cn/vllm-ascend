@@ -822,6 +822,9 @@ class TorchairAscendW8A8DynamicLinearMethod:
         layer.weight_scale_fp32 = layer.weight_scale.data.to(torch.float32)
         layer.weight_offset.data = layer.weight_offset.data.flatten()
 
+        torch._dynamo.mark_static(layer.weight_scale_fp32)
+        torch._dynamo.mark_static(layer.weight_scale)
+        torch._dynamo.mark_static(layer.weight_offset)
 
 class TorchairAscendW8A8DynamicFusedMoEMethod:
     """FusedMoe method for Ascend W8A8_DYNAMIC.
@@ -1043,3 +1046,8 @@ class TorchairAscendW8A8DynamicFusedMoEMethod:
             layer.w2_weight_scale.data.shape[0], -1)
         layer.w2_weight_offset.data = layer.w2_weight_offset.data.view(
             layer.w2_weight_offset.data.shape[0], -1)
+        torch._dynamo.mark_static(layer.w13_weight_scale_fp32)
+        torch._dynamo.mark_static(layer.w13_weight_scale)
+        torch._dynamo.mark_static(layer.w13_weight_offset)
+        torch._dynamo.mark_static(layer.w2_weight_scale)
+        torch._dynamo.mark_static(layer.w2_weight_offset)

@@ -212,6 +212,7 @@ class TestAscendMLATorchairMetadataBuilder(TestBase):
         mock_vllm_config.cache_config.block_size = 16
         mock_vllm_config.scheduler_config.max_num_seqs = 4
         mock_vllm_config.scheduler_config.chunked_prefill_enabled = False
+        mock_vllm_config.kv_transfer_config = None
         mock_device = 'cpu'
         ascend_config.torchair_graph_config = MagicMock()
         ascend_config.torchair_graph_config.enabled = True
@@ -248,6 +249,7 @@ class TestAscendMLATorchairMetadataBuilder(TestBase):
         mock_vllm_config.cache_config.block_size = 16
         mock_vllm_config.scheduler_config.max_num_seqs = 4
         mock_vllm_config.scheduler_config.chunked_prefill_enabled = False
+        mock_vllm_config.kv_transfer_config = None
         mock_device = 'cpu'
 
         with patch("vllm_ascend.torchair.torchair_mla.get_ascend_config",

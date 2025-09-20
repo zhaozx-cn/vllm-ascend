@@ -86,6 +86,7 @@ from vllm_ascend.compilation.acl_graph import ACLGraphWrapper
 from vllm_ascend.multistream.ms_split import compute_split_seq_index
 from vllm_ascend.platform import NPUPlatform
 from vllm_ascend.sample.logits_processor import build_logitsprocs
+from vllm_ascend.sample.omniinfer_sampler import SimpleSampler
 from vllm_ascend.sample.rejection_sampler import AscendRejectionSampler
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.eagle_proposer import EagleProposer
@@ -307,7 +308,10 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 self.drafter = get_spec_decode_method(
                     self.speculative_config.method, self.vllm_config,
                     self.device, self)
-                self.rejection_sampler = AscendRejectionSampler()
+                if envs_ascend.VLLM_ASCEND_ENABLE_OMNIINFER_SAMPLER:
+                    self.rejection_sampler = SimpleSampler(self.sampler)
+                else:
+                    self.rejection_sampler = AscendRejectionSampler()
 
         # Persistent batch.
         self.input_ids = torch.zeros(self.max_num_tokens,
@@ -1461,6 +1465,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             # Speculative decoding is not enabled.
             draft_token_ids = None
         else:
+            if isinstance(self.drafter, MtpProposer) and self.is_kv_producer:
+                return None
             draft_token_ids = self.drafter.generate_token_ids(
                 valid_sampled_token_ids, sampling_metadata, scheduler_output,
                 spec_decode_metadata, positions, num_scheduled_tokens,
@@ -1574,6 +1580,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
              logits_indices, spec_decode_metadata, input_ids, inputs_embeds,
              intermediate_tensors) = (self._prepare_inputs(
                  scheduler_output, intermediate_tensors))
+
+        ori_attn_metadata = attn_metadata
 
         moe_comm_method = self._select_moe_comm_method(num_input_tokens)
 
@@ -1691,14 +1699,29 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 # it is safe to update `target_logits` in place.
                 target_logits = logits[
                     spec_decode_metadata.target_logits_indices]
-                output_token_ids = self.rejection_sampler(
-                    spec_decode_metadata,
-                    None,  # draft_probs
-                    target_logits,
-                    bonus_token_ids,
-                    sampling_metadata,
-                )
-                sampler_output.sampled_token_ids = output_token_ids
+
+                if envs_ascend.VLLM_ASCEND_ENABLE_OMNIINFER_SAMPLER:
+                    sampler_output, _, _ , _= \
+                    self.rejection_sampler(
+                        input_ids=input_ids,
+                        logits=logits,
+                        logits_indices=spec_decode_metadata.logits_indices,
+                        sampling_metadata=sampling_metadata,
+                        num_decodes=ori_attn_metadata.num_decodes,
+                        num_prefills=ori_attn_metadata.num_prefills,
+                        bonus_token_ids=bonus_token_ids,
+                        target_logits=target_logits,
+                        metadata=spec_decode_metadata
+                    )
+                else:
+                    output_token_ids = self.rejection_sampler(
+                        spec_decode_metadata,
+                        None,  # draft_probs
+                        target_logits,
+                        bonus_token_ids,
+                        sampling_metadata,
+                    )
+                    sampler_output.sampled_token_ids = output_token_ids
 
             discard_sampled_tokens_req_indices: list[int] = []
             # TODO(woosuk): The following loop can be slow since it iterates over
@@ -1731,7 +1754,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             logprobs_tensors_for_trace = None
             if hasattr(sampler_output, 'logprobs_tensors_for_trace') and \
                sampler_output.logprobs_tensors_for_trace is not None:
-                logprobs_tensors_for_trace = sampler_output.logprobs_tensors_for_trace.tolists()
+                logprobs_tensors_for_trace = sampler_output.logprobs_tensors_for_trace.tolists(
+                )
 
             # Compute prompt logprobs if needed.
             prompt_logprobs_dict = self._get_prompt_logprobs_dict(
@@ -2081,6 +2105,8 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                     dummy_compute_logits(hidden_states)
 
             if self.drafter:
+                if isinstance(self.drafter, MtpProposer) and self.is_kv_producer:
+                    return hidden_states
                 self.drafter.dummy_run(
                     num_tokens=num_tokens,
                     with_prefill=with_prefill,
@@ -2100,10 +2126,19 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             self.in_profile_run = False
 
     def profile_run(self) -> None:
+        if has_kv_transfer_group() and \
+            self.vllm_config.kv_transfer_config.is_kv_consumer:
+            num_tokens = self.scheduler_config.max_num_seqs
+            if self.speculative_config:
+                num_tokens = num_tokens * \
+                    self.speculative_config.num_speculative_tokens
+        else:
+            num_tokens = self.max_num_tokens
+
         # Trigger compilation for general shape.
         with self.set_in_profile_run():
-            hidden_states = self._dummy_run(self.max_num_tokens,
-                                            with_prefill=True)
+            hidden_states = self._dummy_run(num_tokens, with_prefill=True)
+
         output = None
         if get_pp_group().is_last_rank:
             if self.is_pooling_model:

@@ -228,6 +228,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         self.dp_size = vllm_config.parallel_config.data_parallel_size
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank
         self.device = device
+        self.swap_stream = torch.npu.Stream(device=self.device)
         if envs_ascend.VLLM_ASCEND_ENABLE_PREFETCH_MLP:
             self.prefetch_stream = torch.npu.Stream(device=device)
         else:
@@ -1591,6 +1592,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             self.aclgraph_dispatcher.dispatch(batch_descriptor)
 
         # Run forward pass
+        if scheduler_output.blocks_to_swap_in \
+            or scheduler_output.blocks_to_swap_out:
+            torch.npu.current_stream().wait_stream(self.swap_stream)
         with ProfileExecuteDuration().capture_async("forward"):
             with set_ascend_forward_context(
                     attn_metadata,

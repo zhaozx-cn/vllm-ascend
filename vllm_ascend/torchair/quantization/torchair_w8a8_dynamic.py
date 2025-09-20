@@ -29,7 +29,7 @@ from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.torchair.ops.torchair_fused_moe import torchair_select_experts
 from vllm_ascend.torchair.utils import npu_stream_switch, npu_wait_tensor
 from vllm_ascend.utils import (ACL_FORMAT_FRACTAL_NZ, AscendSocVersion,
-                               dispose_tensor, get_ascend_soc_version)
+                               dispose_tensor, get_ascend_soc_version,npu_prefetch)
 
 
 def torchair_apply_mlp_decode(hidden_states: torch.Tensor,
@@ -978,6 +978,9 @@ class TorchairAscendW8A8DynamicFusedMoEMethod:
                 top_k=top_k,
                 expert_map=expert_map)
         elif fused_moe_state == FusedMoEState.MC2:
+            enable_prefetch = self.torchair_graph_enabled
+            npu_prefetch(layer.w13_weight, x, enabled=enable_prefetch)
+            npu_prefetch(layer.w2_weight, x, enabled=enable_prefetch)
             return torchair_fused_experts_with_mc2(
                 hidden_states=x,
                 w1=layer.w13_weight,

@@ -184,7 +184,6 @@ class AscendUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod):
         # currently it is only activated when doing profile runs.
         if enable_force_load_balance and not self.use_aclgraph:
             topk_ids = torch.randint_like(topk_ids, 0, global_num_experts)
-
         return unified_fused_experts_eager(hidden_states=x,
                                            w1=layer.w13_weight,
                                            w2=layer.w2_weight,

@@ -33,6 +33,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
+from vllm_ascend.ascend_config import get_ascend_config
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
 from vllm.model_executor.models.interfaces import (MixtureOfExperts,
@@ -156,7 +157,6 @@ class CustomQwen3MoeDecoderLayer(Qwen3MoeDecoderLayer):
             quant_config=quant_config,
             prefix=f"{prefix}.self_attn",
         )
-
         # `mlp_only_layers` in the config.
         layer_idx = extract_layer_index(prefix)
         mlp_only_layers = ([] if not hasattr(config, "mlp_only_layers") else
@@ -199,7 +199,6 @@ class CustomQwen3MoeDecoderLayer(Qwen3MoeDecoderLayer):
         residual: Optional[torch.Tensor],
         _metadata_for_padding: Optional[MetadataForPadding] = None,
     ) -> torch.Tensor:
-
         # To prevent precision issues during the decoder phase when only prefilling enables SP
         if not self.enable_sequence_parallelism:
             self.self_attn.o_proj.reduce_results = True

@@ -61,6 +61,7 @@ class TestNPUWorker(TestBase):
         # Setup mock behavior
         mock_ops.register_dummy_fusion_op.return_value = None
 
+        self.vllm_config_mock.cache_config.swap_space_bytes = 0
         # Import and create NPUWorker instance
         from vllm_ascend.worker.worker_v1 import NPUWorker
 
@@ -118,6 +119,7 @@ class TestNPUWorker(TestBase):
         # Set trust_remote_code=True
         self.model_config_mock.trust_remote_code = True
         mock_ops.register_dummy_fusion_op.return_value = None
+        self.vllm_config_mock.cache_config.swap_space_bytes = 0
 
         # Create NPUWorker instance
         from vllm_ascend.worker.worker_v1 import NPUWorker
@@ -158,6 +160,7 @@ class TestNPUWorker(TestBase):
         # Set custom cache_dtype
         self.cache_config_mock.cache_dtype = "float32"
         mock_ops.register_dummy_fusion_op.return_value = None
+        self.vllm_config_mock.cache_config.swap_space_bytes = 0
 
         # Create NPUWorker instance
         from vllm_ascend.worker.worker_v1 import NPUWorker
@@ -828,6 +831,8 @@ class TestNPUWorker(TestBase):
 
             # Mock scheduler_output and return result
             mock_scheduler_output = MagicMock()
+            mock_scheduler_output.blocks_to_swap_in = None
+            mock_scheduler_output.blocks_to_swap_out = None
             # Create a real ModelRunnerOutput instance or mock
             mock_model_output = MagicMock(spec=ModelRunnerOutput)
             worker.model_runner.execute_model.return_value = mock_model_output
@@ -879,6 +884,8 @@ class TestNPUWorker(TestBase):
             mock_has_kv_transfer_group.return_value = False
 
             mock_scheduler_output = MagicMock()
+            mock_scheduler_output.blocks_to_swap_in = None
+            mock_scheduler_output.blocks_to_swap_out = None
 
             # Test execute_model
             result = worker.execute_model(mock_scheduler_output)
@@ -926,6 +933,8 @@ class TestNPUWorker(TestBase):
 
             # Mock return result
             mock_scheduler_output = MagicMock()
+            mock_scheduler_output.blocks_to_swap_in = None
+            mock_scheduler_output.blocks_to_swap_out = None
             mock_model_output = MagicMock(spec=ModelRunnerOutput)
             worker.model_runner.execute_model.return_value = mock_model_output
 
@@ -1110,6 +1119,24 @@ class TestNPUWorker(TestBase):
             worker.vllm_config.model_config = MagicMock()
             worker.vllm_config.model_config.enable_sleep_mode = True
 
+            worker.num_cpu_blocks = 8
+            worker.block_size = 16
+            worker.num_kv_heads = 4
+            worker.head_size = 64
+            worker.num_attention_layers = 61
+            worker.model_config = MagicMock()
+            worker.model_config.is_deepseek_mla = True
+            worker.model_config.hf_text_config = MagicMock()
+            worker.model_config.hf_text_config.kv_lora_rank = 32
+            worker.model_config.hf_text_config.qk_rope_head_dim = 64
+            worker.cache_dtype = torch.float16
+            worker.cpu_kv_caches_nope = []
+            worker.cpu_kv_caches_pe = []
+            worker.cpu_kv_caches = []
+            worker.npu_kv_caches_nope = []
+            worker.npu_kv_caches_pe = []
+            worker.npu_kv_caches = []
+
             # Setup allocator mock
             mock_allocator = MagicMock()
             mock_context = MagicMock()
@@ -1140,6 +1167,24 @@ class TestNPUWorker(TestBase):
             worker.vllm_config = MagicMock()
             worker.vllm_config.model_config = MagicMock()
             worker.vllm_config.model_config.enable_sleep_mode = False
+
+            worker.num_cpu_blocks = 8
+            worker.block_size = 16
+            worker.num_kv_heads = 4
+            worker.head_size = 64
+            worker.num_attention_layers = 61
+            worker.model_config = MagicMock()
+            worker.model_config.is_deepseek_mla = True
+            worker.model_config.hf_text_config = MagicMock()
+            worker.model_config.hf_text_config.kv_lora_rank = 32
+            worker.model_config.hf_text_config.qk_rope_head_dim = 64
+            worker.cache_dtype = torch.float16
+            worker.cpu_kv_caches_nope = []
+            worker.cpu_kv_caches_pe = []
+            worker.cpu_kv_caches = []
+            worker.npu_kv_caches_nope = []
+            worker.npu_kv_caches_pe = []
+            worker.npu_kv_caches = []
 
             # Create mock kv_cache_config
             mock_kv_cache_config = MagicMock()

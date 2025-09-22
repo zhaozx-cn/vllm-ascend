@@ -56,6 +56,8 @@ from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.ops.fused_moe import AscendFusedMoE
 from vllm_ascend.ops.sequence_parallel import (MetadataForPadding,
                                                init_metadata_for_sp)
+from vllm_ascend.torchair.utils import npu_stream_switch
+
 
 from vllm_ascend.utils import npu_prefetch
 class CustomSparseMoeBlock(Qwen3MoeSparseMoeBlock):
@@ -207,16 +209,28 @@ class CustomQwen3MoeAttention(Qwen3MoeAttention):
 
     @staticmethod
     def normalize_qkv(qkv: torch.Tensor, q_size: int, kv_size: int,
-                      head_dim: int, q_norm, k_norm):
+                      head_dim: int, q_norm, k_norm,
+                      attn_metadata: Optional[AttentionMetadata] = None):
         q, k, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
 
         q_by_head = q.view(*q.shape[:-1], q.shape[-1] // head_dim, head_dim)
         q_by_head = q_norm(q_by_head)
         q = q_by_head.view(q.shape)
 
-        k_by_head = k.view(*k.shape[:-1], k.shape[-1] // head_dim, head_dim)
-        k_by_head = k_norm(k_by_head)
-        k = k_by_head.view(k.shape)
+        if attn_metadata is None:
+            # legacy reason: no attn_metadata when profile run
+            is_prefill = True
+        else: is_prefill = attn_metadata.attn_state != AscendAttentionState.DecodeOnly
+
+        if not is_prefill:
+            with npu_stream_switch("gqa_secondary", 0):
+                k_by_head = k.view(*k.shape[:-1], k.shape[-1] // head_dim, head_dim)
+                k_by_head = k_norm(k_by_head)
+                k = k_by_head.view(k.shape)
+        else :
+            k_by_head = k.view(*k.shape[:-1], k.shape[-1] // head_dim, head_dim)
+            k_by_head = k_norm(k_by_head)
+            k = k_by_head.view(k.shape)
 
         return q, k, v
 
@@ -228,7 +242,7 @@ class CustomQwen3MoeAttention(Qwen3MoeAttention):
             attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = self.normalize_qkv(qkv, self.q_size, self.kv_size,
-                                     self.head_dim, self.q_norm, self.k_norm)
+                                     self.head_dim, self.q_norm, self.k_norm, attn_metadata)
 
         if (self.torchair_graph_enabled and attn_metadata is not None and
                 attn_metadata.attn_state == AscendAttentionState.DecodeOnly):

@@ -50,7 +50,7 @@ from vllm.model_executor.models.utils import (
     PPMissingLayer, extract_layer_index,
     make_empty_intermediate_tensors_factory, make_layers, maybe_prefix)
 from vllm.sequence import IntermediateTensors
-
+import torch_npu
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.ops.fused_moe import AscendFusedMoE
@@ -211,8 +211,10 @@ class CustomQwen3MoeAttention(Qwen3MoeAttention):
     def normalize_qkv(qkv: torch.Tensor, q_size: int, kv_size: int,
                       head_dim: int, q_norm, k_norm,
                       attn_metadata: Optional[AttentionMetadata] = None):
-        q, k, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
-
+        if get_ascend_config().torchair_graph_config.enabled:
+            q,k,v=torch_npu.npu_split_with_size(qkv, [q_size, kv_size, kv_size], -1)
+        else:
+            q, k, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
         q_by_head = q.view(*q.shape[:-1], q.shape[-1] // head_dim, head_dim)
         q_by_head = q_norm(q_by_head)
         q = q_by_head.view(q.shape)

@@ -26,6 +26,7 @@ from vllm_ascend.multistream.context import get_multistream_comm_context
 from vllm_ascend.multistream.ms_split import model_input_split_v1_mla_attn
 from vllm_ascend.utils import npu_prefetch
 from vllm_ascend.worker.npu_input_batch import InputBatch
+from vllm.forward_context import get_forward_context
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -960,7 +961,8 @@ class AscendMLAImpl(MLAAttentionImpl):
         # Inputs and outputs may be padded for CUDA graphs
         output_padded = output
         output = output[:num_actual_tokens, ...]
-        o_proj_input_shape = (num_actual_tokens,
+        num_padded_tokens = get_forward_context().num_tokens
+        o_proj_input_shape = (num_padded_tokens,
                               self.num_heads * self.v_head_dim)
         o_proj_input = torch.empty(o_proj_input_shape,
                                    dtype=hidden_states.dtype,
@@ -1001,7 +1003,7 @@ class AscendMLAImpl(MLAAttentionImpl):
                     o_proj_input[num_decode_tokens:] = output_prefill
                     current_ms_metadata.after_comm_event.record()
             else:
-                o_proj_input[num_decode_tokens:] = output_prefill
+                o_proj_input[num_decode_tokens:num_actual_tokens] = output_prefill
         # O proj
         current_ms_metadata = get_multistream_comm_context()
         MAX_O_PROJ_PREFETCH_SIZE = 16 * 1024 * 1024

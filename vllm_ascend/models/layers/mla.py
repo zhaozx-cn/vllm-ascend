@@ -128,10 +128,7 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
         if not self.enable_shared_expert_dp or self.debug_layer_idx > 0:
             output_shape = hidden_states.shape
         else:
-            num_tokens = hidden_states.shape[0]
-            pad_size = forward_context.pad_size
-            rows = (num_tokens + pad_size) // self.tp_size
-            output_shape = (rows, hidden_states.shape[1])
+            output_shape = torch.chunk(hidden_states,self.tp_size,dim=0)[0].shape
         # FIXME: This does not seem right, should make sure the buffer is fixed
         output = torch.empty(output_shape,
                              dtype=hidden_states.dtype,

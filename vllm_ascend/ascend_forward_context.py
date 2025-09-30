@@ -118,6 +118,7 @@ def set_ascend_forward_context(
                         (num_tokens % tp_world_size)) % tp_world_size
             forward_context.pad_size = pad_size
         forward_context.sp_enabled = sp_enabled
+        forward_context.num_tokens = num_tokens
 
         # set this for rope forward_oot using
         forward_context.is_first_layer = True

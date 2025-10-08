@@ -133,6 +133,8 @@ class NPUWorker(WorkerBase):
         self.npu_kv_caches = []
         self.npu_kv_caches_pe = []
         self.npu_kv_caches_nope = []
+        self.execnt = 0
+        self.dummycnt = 0
 
     def sleep(self, level: int = 1) -> None:
         if not sleep_mode_enabled():
@@ -240,7 +242,8 @@ class NPUWorker(WorkerBase):
             self._swap_in(blocks_to_swap_in)
         elif blocks_to_swap_out:
             self._swap_out(blocks_to_swap_out)
-
+        self.execnt = self.execnt + 1
+        print("*****************self exe cnt ",self.execnt,flush=True)
         output = self.model_runner.execute_model(scheduler_output,
                                                  intermediate_tensors)
         parallel_config = self.vllm_config.parallel_config
@@ -417,6 +420,8 @@ class NPUWorker(WorkerBase):
         return self.model_runner.pin_lora(lora_id)
 
     def execute_dummy_batch(self) -> None:
+        self.dummycnt = self.dummycnt + 1
+        print("****************self dummy cnt ",self.dummycnt,flush=True)
         self.model_runner._dummy_run(1)
 
     def _init_worker_distributed_environment(self) -> None:

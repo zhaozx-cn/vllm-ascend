@@ -109,7 +109,7 @@ else:
 import torch_npu
 
 import vllm_ascend.envs as envs_ascend
-
+cnt = 0
 # if true, allow tensor initialization and casting with internal format (e.g., NZ)
 torch.npu.config.allow_internal_format = True
 
@@ -645,14 +645,18 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             device="npu")
 
         packed_tensor = torch.cat([num_tokens_tensor, flags_tensor])
-
+        global cnt
+        cnt = cnt + 1
+        print(f"*************cnt {cnt} packed_tensor before allreduce ",packed_tensor,flush=True)
         dist.all_reduce(packed_tensor, group=get_dp_group().device_group)
-
+        print(f"*************cnt {cnt} packed_tensor after allreduce ",packed_tensor,flush=True)
         # Unpack the results
         num_tokens_across_dp = packed_tensor[:-2]
         synced_flags = packed_tensor[-2:]
 
         max_tokens_across_dp = torch.max(num_tokens_across_dp).item()
+        if cnt > 2:
+            max_tokens_across_dp = 1
         global_with_prefill = bool(synced_flags[0])
         global_enable_dbo = not bool(synced_flags[1])
 
@@ -724,8 +728,9 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                 seq_lens, position, self.dtype, self.device)
         # Prefill without cache situation.
         elif attn_state == AscendAttentionState.PrefillNoCache:
+            max_seq_len = max(seq_lens, default=0)
             return self.attn_mask_builder.get_attn_mask(
-                128, self.dtype, self.device)
+                max_seq_len, self.dtype, self.device)
         # Prefill with cache hit.
         elif attn_state == AscendAttentionState.PrefillCacheHit:
             return self.attn_mask_builder.get_attn_mask(
@@ -1612,6 +1617,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
                     model_instance=self.model):
                 self.maybe_setup_kv_connector(scheduler_output)
 
+                print("*******************forward start*************************",flush=True)
                 hidden_states = self._generate_process_reqs_hidden_states(
                     attn_metadata, self.with_prefill, maybe_padded_num_tokens,
                     input_ids, positions, intermediate_tensors, inputs_embeds)
@@ -1623,7 +1629,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
             aux_hidden_states = None
             if self.drafter and self.drafter.name == SpecDcodeType.EAGLE3:
                 hidden_states, aux_hidden_states = hidden_states
-
+        print("*******************forward end*************************",flush=True)
         kv_connector_output = None
         if finished_sending is not None or finished_recving is not None:
             kv_connector_output = KVConnectorOutput(
@@ -1862,6 +1868,7 @@ class NPUModelRunner(LoRAModelRunnerMixin):
         if hasattr(model_runner_output, 'logprobs_tensors_for_trace'):
             model_runner_output.logprobs_tensors_for_trace = logprobs_tensors_for_trace
 
+        print("*******************execute end*************************",flush=True)
         durations = ProfileExecuteDuration().pop_captured_sync()
         if durations:
             dr_str = [

@@ -194,8 +194,8 @@ direct_register_custom_op(op_name="maybe_all_gather_and_maybe_unpad",
                           dispatch_key="PrivateUse1")
 
 direct_register_custom_op(op_name="maybe_pad_and_reduce",
-                          op_func=fake_maybe_pad_and_reduce_impl,
-                          fake_impl=lambda x: x,
+                          op_func=_maybe_pad_and_reduce_impl,
+                          fake_impl=fake_maybe_pad_and_reduce_impl,
                           mutates_args=[],
                           dispatch_key="PrivateUse1")
 

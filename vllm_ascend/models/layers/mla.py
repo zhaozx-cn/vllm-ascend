@@ -120,11 +120,16 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
             hidden_states: torch.Tensor,
             kv_cache: Optional[torch.Tensor] = None,
             attn_metadata: Optional[AttentionMetadata] = None) -> torch.Tensor:
-        forward_context = get_forward_context()
-        sp_enabled = forward_context.sp_enabled
-        need_gather_q_kv = False
-        if sp_enabled and self.debug_layer_idx > 0:
-            need_gather_q_kv = True
+        try:
+            forward_context = get_forward_context()
+            sp_enabled = forward_context.sp_enabled
+            if sp_enabled and (self.debug_layer_idx > 0
+                               and self.debug_layer_idx < self.layers):
+                need_gather_q_kv = True
+            else:
+                need_gather_q_kv = False
+        except AssertionError:
+            need_gather_q_kv = False
         if not self.enable_shared_expert_dp or (self.debug_layer_idx > 0
                                                 and self.debug_layer_idx
                                                 < self.layers):

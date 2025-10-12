@@ -117,7 +117,8 @@ def set_ascend_forward_context(
             tp_world_size > 1 and \
             num_tokens is not None and num_tokens > 1000
 
-        if get_ascend_config().enable_shared_expert_dp:
+        if get_ascend_config(
+        ).enable_shared_expert_dp and num_tokens is not None:
             sp_enabled = True
         if sp_enabled:
             pad_size = (tp_world_size -

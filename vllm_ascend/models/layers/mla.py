@@ -125,7 +125,9 @@ class AscendMultiHeadLatentAttention(MultiHeadLatentAttention):
         need_gather_q_kv = False
         if sp_enabled and self.debug_layer_idx > 0:
             need_gather_q_kv = True
-        if not self.enable_shared_expert_dp or self.debug_layer_idx > 0:
+        if not self.enable_shared_expert_dp or (self.debug_layer_idx > 0
+                                                and self.debug_layer_idx
+                                                < self.layers):
             output_shape = hidden_states.shape
         else:
             output_shape = torch.chunk(hidden_states, self.tp_size,

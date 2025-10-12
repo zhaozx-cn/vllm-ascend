@@ -33,9 +33,10 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.models.deepseek_mtp import (
     DeepSeekMTP, DeepSeekMultiTokenPredictor, DeepSeekMultiTokenPredictorLayer,
     SharedHead)
-from vllm.model_executor.models.deepseek_v2 import DeepseekV2DecoderLayer
 from vllm.model_executor.models.utils import maybe_prefix
 from vllm.sequence import IntermediateTensors
+
+from vllm_ascend.models.deepseek_v2 import CustomDeepseekV2DecoderLayer
 
 
 class CustomDeepSeekShareHead(SharedHead):
@@ -74,8 +75,8 @@ class CustomDeepSeekMultiTokenPredictorLayer(DeepSeekMultiTokenPredictorLayer):
                                                    quant_config=quant_config,
                                                    prefix=maybe_prefix(
                                                        prefix, "shared_head"))
-        self.mtp_block = DeepseekV2DecoderLayer(vllm_config=vllm_config,
-                                                prefix=prefix)
+        self.mtp_block = CustomDeepseekV2DecoderLayer(vllm_config=vllm_config,
+                                                      prefix=prefix)
 
     def forward(
         self,

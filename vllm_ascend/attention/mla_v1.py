@@ -1045,8 +1045,6 @@ class AscendMLAImpl(MLAAttentionImpl):
         attn_metadata.num_decode_tokens is not None
         num_decode_tokens = attn_metadata.num_decode_tokens
         # Inputs and outputs may be padded for CUDA graphs
-        output_padded = output
-        output = output[:num_actual_tokens, ...]
         num_padded_tokens = get_forward_context().num_tokens
         o_proj_input_shape = (num_padded_tokens,
                               self.num_heads * self.v_head_dim)
@@ -1115,4 +1113,4 @@ class AscendMLAImpl(MLAAttentionImpl):
         has_prefill = attn_metadata.num_prefills > 0
         if has_prefill:
             maybe_save_kv_layer_to_connector(layer_name, list(kv_cache))
-        return output_padded
+        return output

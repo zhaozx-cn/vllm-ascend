@@ -9,7 +9,7 @@ from vllm.attention.backends.abstract import (AttentionBackend,
                                               AttentionMetadata,
                                               MLAAttentionImpl)
 from vllm.config import VllmConfig, get_current_vllm_config
-from vllm.distributed import get_tensor_model_parallel_world_size
+from vllm.distributed import get_tensor_model_parallel_world_size, get_tp_group
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.model_executor.layers.linear import (LinearBase,
                                                UnquantizedLinearMethod)
@@ -974,10 +974,9 @@ class AscendMLAImpl(MLAAttentionImpl):
 
         kv_no_split = self.kv_a_proj_with_mqa(hidden_states)[0]
         # Process for shared_expert_dp
-        q_c = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
-            q_c, need_gather_q_kv)
-        kv_no_split = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
-            kv_no_split, need_gather_q_kv)
+        if need_gather_q_kv:
+            q_c = get_tp_group().all_gather(q_c, 0)
+            kv_no_split = get_tp_group().all_gather(kv_no_split, 0)
         decode_preprocess_res = None
         prefill_preprocess_res = None
         if has_prefill:

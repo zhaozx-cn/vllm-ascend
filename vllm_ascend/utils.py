@@ -389,7 +389,7 @@ def update_aclgraph_sizes(vllm_config: VllmConfig) -> None:
         )
 
     # remove the sizes that not multiple of tp_size when enable sequence parallelism
-    if get_ascend_config().enable_shared_expert_dp:
+    if enable_sp():
         original_sizes = update_sizes_for_sequence_parallelism(
             parallel_config.tensor_parallel_size, original_sizes)
     # If original sizes exceed maximum, sample a representative subset

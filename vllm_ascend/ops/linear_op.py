@@ -421,4 +421,7 @@ def get_parallel_op(disable_tp, prefix, layer, direct):
     if custom_op is not None:
         return custom_op, custom_op.tp_rank, custom_op.tp_size
 
+    if "shared_expert" in prefix and enable_sp():
+        return None, 0, 1
+
     return None, get_tp_group().rank_in_group, get_tp_group().world_size

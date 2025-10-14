@@ -11,7 +11,7 @@ from vllm.forward_context import (BatchDescriptor, get_forward_context,
                                   set_forward_context)
 
 import vllm_ascend.envs as envs_ascend
-from vllm_ascend.utils import enable_sp
+from vllm_ascend.utils import enable_sp, is_moe_model
 
 if TYPE_CHECKING:
     from vllm_ascend.ops.weight_prefetch import WeightPrefetchMethod
@@ -112,15 +112,21 @@ def set_ascend_forward_context(
         # Currently, it is an empirical value. In normal scenarios, if the concurrency exceeds this threshold,
         # the performance benefits can be maximized. Conversely, if the concurrency is below the threshold,
         # the performance may degrade due to the switching of communication methods.
-        sp_enabled = enable_sp(vllm_config) and \
-            tp_world_size > 1 and \
-            num_tokens is not None and num_tokens > 1000
+        if is_moe_model(vllm_config):
+            sp_enabled = enable_sp(vllm_config) and \
+                tp_world_size > 1 and \
+                num_tokens is not None
+        else:
+            sp_enabled = enable_sp(vllm_config) and \
+                tp_world_size > 1 and \
+                num_tokens is not None and num_tokens > 1000
 
         if sp_enabled:
             pad_size = (tp_world_size -
                         (num_tokens % tp_world_size)) % tp_world_size
             forward_context.pad_size = pad_size
         forward_context.sp_enabled = sp_enabled
+        forward_context.num_tokens = num_tokens
 
         # set this for rope forward_oot using
         forward_context.is_first_layer = True

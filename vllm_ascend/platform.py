@@ -207,6 +207,12 @@ class NPUPlatform(Platform):
 
         # set cudaprah sizes before extending `compilation_config.splitting_ops`
         vllm_config._set_cudagraph_sizes()
+        if vllm_config.compilation_config.pass_config.enable_sequence_parallelism or envs_ascend.VLLM_ASCEND_ENABLE_FLASHCOMM or get_ascend_config(
+        ).enable_shared_expert_dp:
+            updated_sizes = vllm_config.update_sizes_for_sequence_parallelism(
+                vllm_config.compilation_config.cudagraph_capture_sizes)
+            vllm_config.compilation_config.init_with_cudagraph_sizes(
+                updated_sizes)
 
         # TODO: Full graph is fully supported later, and the default value will be set to full graph.
         if compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
@@ -254,7 +260,7 @@ class NPUPlatform(Platform):
         if parallel_config and parallel_config.worker_cls == "auto":
             # TODO: this is a tricky way to disable `use_sequence_parallel_moe` in vllm.
             os.environ["VLLM_ALL2ALL_BACKEND"] = "flashinfer_all2allv"
-            if ascend_config.torchair_graph_config.enabled or ascend_config.enable_shared_expert_dp:
+            if ascend_config.torchair_graph_config.enabled:
                 parallel_config.worker_cls = "vllm_ascend.torchair.torchair_worker.NPUTorchairWorker"
             else:
                 parallel_config.worker_cls = "vllm_ascend.worker.worker_v1.NPUWorker"
@@ -299,8 +305,6 @@ class NPUPlatform(Platform):
         ascend_config = get_ascend_config()
 
         if use_mla and ascend_config.enable_shared_expert_dp:
-            if use_mla and not use_sfa:
-                return "vllm_ascend.torchair.torchair_mla.AscendMLATorchairBackend"
             if use_mla and use_sfa:
                 return "vllm_ascend.torchair.torchair_sfa.AscendSFATorchairBackend"
 

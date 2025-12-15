@@ -43,9 +43,23 @@ def forward(
     else:
         llama_4_scaling = None
 
+    '''
     for layer in islice(self.layers, self.start_layer, self.end_layer):
         hidden_states, residual = layer(positions, hidden_states, residual,
                                         llama_4_scaling)
+    '''
+    aux_hidden_states = []
+    for layer_idx, layer in enumerate(
+        islice(self.layers, self.start_layer, self.end_layer),
+        start=self.start_layer):
+        # Collect auxiliary hidden states if specified
+        if layer_idx in self.aux_hidden_state_layers:
+            aux_hidden_state = (
+                hidden_states + residual if residual is not None else hidden_states
+            )
+            aux_hidden_states.append(aux_hidden_state)
+        hidden_states, residual = layer(positions, hidden_states, residual,
+                llama_4_scaling)
 
     if not get_pp_group().is_last_rank:
         return IntermediateTensors({
@@ -54,6 +68,8 @@ def forward(
         })
 
     hidden_states, _ = self.norm(hidden_states, residual)
+    if len(aux_hidden_states) > 0:
+        return hidden_states, aux_hidden_states
     return hidden_states
 
 

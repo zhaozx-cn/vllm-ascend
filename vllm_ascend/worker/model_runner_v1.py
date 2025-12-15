@@ -88,7 +88,7 @@ from vllm_ascend.ascend_forward_context import (MoECommType,
                                                 set_cos_and_sin, set_mc2_mask,
                                                 set_mc2_tokens_capacity)
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
-from vllm_ascend.attention.attention_v1 import AscendAttentionState
+from vllm_ascend.attention.attention_v1 import AscendAttentionState,AscendAttentionMetadataBuilder
 from vllm_ascend.attention.utils import (AscendCommonAttentionMetadata,
                                          AscendPrefillContextParallelMetadata)
 # yapf conflicts with isort for this block
@@ -1241,13 +1241,13 @@ class NPUModelRunner(GPUModelRunner):
         # We assume it is the decode stage, where prefill occurs but only one token is not hit in cache.
         elif np.all(num_scheduled_tokens == 1):
             attn_state = AscendAttentionState.DecodeOnly
-            if self.speculative_config and self.speculative_config.method == 'mtp':
+            if self.speculative_config and (self.speculative_config.method == 'mtp'): #or self.speculative_config.method == 'eagle3'):
                 # SpecDecoding now supports seq_len=1 and seq_len=2
                 # In Prefilling Decoding Disaggregation scenario, SpecDecoding need to supports seq_len=1
                 attn_state = AscendAttentionState.SpecDecoding
         # Speculative decoding.
         elif np.all(num_valid_tokens == 1):
-            if self.speculative_config and self.speculative_config.method == 'mtp':
+            if self.speculative_config and (self.speculative_config.method == 'mtp'): #or self.speculative_config.method == 'eagle3'):
                 attn_state = AscendAttentionState.SpecDecoding
             else:
                 attn_state = AscendAttentionState.ChunkedPrefill
@@ -1998,7 +1998,7 @@ class NPUModelRunner(GPUModelRunner):
                         block_table_tensor[:num_reqs * self.decode_threshold]
                 attn_state = AscendAttentionState.DecodeOnly
                 if self.speculative_config and \
-                        self.speculative_config.method == "mtp":
+                        (self.speculative_config.method == "mtp" or self.speculative_config.method == 'eagle3') :
                     attn_state = AscendAttentionState.SpecDecoding
 
                 common_metadata = CommonAttentionMetadata(
@@ -2017,13 +2017,15 @@ class NPUModelRunner(GPUModelRunner):
 
                 for attn_group in self.attn_groups[kv_cache_group_id]:
                     builder = attn_group.get_metadata_builder()
+                    if isinstance(builder, AscendAttentionMetadataBuilder):
+                        attn_state = AscendAttentionState.DecodeOnly
                     if isinstance(builder, GDNAttentionMetadataBuilder):
                         attn_metadata_gdn_attention = builder.build_for_cudagraph_capture(
                             common_metadata)
                     else:
                         attn_metadata_full_attention = builder.build_for_graph_capture(
                             common_attn_metadata, attn_state, self.get_model())
-                    for layer_name in kv_cache_group_spec.layer_names:
+                    for layer_name in attn_group.layer_names:
                         if "linear_attn" in layer_name:
                             attn_metadata[
                                 layer_name] = attn_metadata_gdn_attention
@@ -2179,7 +2181,6 @@ class NPUModelRunner(GPUModelRunner):
             force_attention=force_attention,
             num_scheduled_tokens=num_scheduled_tokens,
         )
-
         with self.maybe_dummy_run_with_lora(self.lora_config,
                                             num_scheduled_tokens,
                                             num_sampled_tokens):
@@ -2495,7 +2496,7 @@ class NPUModelRunner(GPUModelRunner):
 
                     dsa_k_cache_factor = None
                     dsa_k_cache_size = None
-                    if not self.model_config.use_mla:
+                    if not self.model_config.use_mla or "61" in kv_cache_tensor.shared_by[0]:
                         # for non-mla model, use FullAttentionSpec
                         k_tensor_split_factor = 2
                         v_tensor_split_factor = 2
@@ -2645,8 +2646,9 @@ class NPUModelRunner(GPUModelRunner):
                             kv_cache_spec.num_kv_heads,
                             kv_cache_spec.head_size)
                     dtype = kv_cache_spec.dtype
-                    if not self.model_config.use_mla:
-                        k_shape = kv_cache_shape[1:]
+                    if not self.model_config.use_mla or "61" in layer_name:
+                        #k_shape = kv_cache_shape[1:]
+                        k_shape = kv_cache_shape
                         v_shape = k_shape
                     else:
                         # k_cache: nope_cache    v_cache: rope_cache
@@ -2744,7 +2746,7 @@ class NPUModelRunner(GPUModelRunner):
             if isinstance(kv_cache_group.kv_cache_spec,
                           EncoderOnlyAttentionSpec):
                 continue
-            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec):
+            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec) or isinstance(kv_cache_group.kv_cache_spec, UniformTypeKVCacheSpecs):
                 # This is an attention backend that supports virtual
                 # block splitting. Get the supported block sizes from
                 # the backend.

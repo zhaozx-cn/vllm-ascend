@@ -257,7 +257,7 @@ def update_mla_attn_params(update_stream, forward_context, runtime_shape,
              softmax_lse) = param
             seq_lens_list = forward_context.attn_metadata[
                 key].decode.seq_lens_list
-            if speculative_config and speculative_config.method == "mtp" \
+            if speculative_config and (speculative_config.method == "mtp" or speculative_config.method == "eagle3") \
                     and not forward_context.is_mtp_model:
                 actual_seq_lengths = forward_context.attn_metadata[
                     key].decode.actual_seq_lengths_q

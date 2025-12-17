@@ -25,6 +25,7 @@ from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
+from vllm_ascend.ops.rotary_embedding import update_cos_sin
 from vllm_ascend.spec_decode.interface import Proposer, SpecDcodeType
 
 PADDING_SLOT_ID = -1
@@ -147,7 +148,6 @@ class EagleProposer(Proposer):
                 self.vllm_config.speculative_config.num_speculative_tokens):
             with set_ascend_forward_context(None,
                                             self.vllm_config,
-                                            in_profile_run=True,
                                             num_tokens=num_tokens):
                 self.model(
                     input_ids=self.input_ids[:num_tokens],
@@ -341,6 +341,8 @@ class EagleProposer(Proposer):
         builder = self.runner.attn_groups[0][0].get_metadata_builder()
         attn_metadata = builder.build(0, common_attn_metadata,
                                       self.runner.get_model())
+        # update global cos, sin
+        update_cos_sin(self.positions[:num_input_tokens])
 
         with set_ascend_forward_context(attn_metadata,
                                         self.vllm_config,
@@ -446,6 +448,10 @@ class EagleProposer(Proposer):
 
             attn_metadata.attn_mask = attn_mask
             # Run the model.
+
+            # update global cos, sin
+            update_cos_sin(self.positions[:input_batch_size])
+
             with set_ascend_forward_context(attn_metadata,
                                             self.vllm_config,
                                             num_tokens=input_batch_size):

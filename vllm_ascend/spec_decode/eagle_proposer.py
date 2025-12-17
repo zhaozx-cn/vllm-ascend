@@ -144,6 +144,9 @@ class EagleProposer(Proposer):
                   aclgraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
                   batch_descriptor=None,
                   dummy_compute_logits=lambda hidden_states: None):
+        # update global cos, sin
+        update_cos_sin(self.positions[:num_tokens])
+
         for now_speculative in range(
                 self.vllm_config.speculative_config.num_speculative_tokens):
             with set_ascend_forward_context(None,

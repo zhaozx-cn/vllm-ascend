@@ -410,8 +410,12 @@ class AscendMLAMetadataBuilder:
         num_actual_tokens_pcp_padded = long_seq_metadata.num_actual_tokens_pcp_padded if long_seq_metadata else None
         num_computed_tokens_of_pcp_dcp = long_seq_metadata.num_computed_tokens_of_pcp_dcp if long_seq_metadata else None
 
-        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = \
-            split_decodes_and_prefills(common_attn_metadata, decode_threshold=self.decode_threshold)
+        if common_attn_metadata.num_computed_tokens_cpu[0].item() == 0:
+            num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = \
+                split_decodes_and_prefills(common_attn_metadata, decode_threshold=1)
+        else:
+            num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = \
+                split_decodes_and_prefills(common_attn_metadata, decode_threshold=self.decode_threshold)
         assert num_decodes + num_prefills == num_reqs
         assert num_decode_tokens + num_prefill_tokens == num_actual_tokens
 

@@ -148,15 +148,17 @@ class EagleProposer(Proposer):
         # update global cos, sin
         update_cos_sin(self.positions[:num_tokens])
 
-        with set_ascend_forward_context(None,
-                                        self.vllm_config,
-                                        num_tokens=num_tokens):
-            self.model(
-                input_ids=self.input_ids[:num_tokens],
-                positions=self.positions[:num_tokens],
-                hidden_states=self.hidden_states[:num_tokens],
-            )
-            dummy_compute_logits(self.hidden_states)
+        for num_speculative in range(
+            self.vllm_config.speculative_config.num_speculative_tokens):
+            with set_ascend_forward_context(None,
+                                            self.vllm_config,
+                                            num_tokens=num_tokens):
+                self.model(
+                    input_ids=self.input_ids[:num_tokens],
+                    positions=self.positions[:num_tokens],
+                    hidden_states=self.hidden_states[:num_tokens],
+                )
+                dummy_compute_logits(self.hidden_states)
 
     def generate_token_ids(self,
                            sampled_token_ids: torch.Tensor | list[list[int]],
@@ -335,12 +337,20 @@ class EagleProposer(Proposer):
         else:
             num_input_tokens = num_tokens
 
+        if self.runner.attn_state == AscendAttentionState.ChunkedPrefill:
+            attn_mask = self.attn_mask_builder.get_splitfuse_attn_mask()
+        else:
+            attn_mask = self.attn_mask_builder.get_attn_mask(
+                 2048, self.vllm_config.model_config.dtype)
+        common_attn_metadata.attn_mask = attn_mask
         # copy inputs to buffer for cudagraph
         self.positions[:num_tokens] = target_positions
         self.hidden_states[:num_tokens] = target_hidden_states
 
         # FIXME(woosuk): The below two ops cause synchronization. Optimize.
         builder = self.runner.attn_groups[0][0].get_metadata_builder()
+        if self.vllm_config.model_config.hf_config.model_type == "deepseek_v3":
+            builder = self.runner.attn_groups[0][1].get_metadata_builder()
         attn_metadata = builder.build(0, common_attn_metadata,
                                       self.runner.get_model())
         # update global cos, sin

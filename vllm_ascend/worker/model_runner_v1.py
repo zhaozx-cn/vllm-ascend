@@ -85,7 +85,8 @@ from vllm.v1.worker.utils import AttentionGroup
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
-from vllm_ascend.attention.attention_v1 import AscendAttentionState
+from vllm_ascend.attention.attention_v1 import (AscendAttentionState,
+                                                AscendAttentionMetadataBuilder)
 from vllm_ascend.attention.utils import (AscendCommonAttentionMetadata,
                                          AscendPrefillContextParallelMetadata)
 # yapf conflicts with isort for this block
@@ -1878,7 +1879,7 @@ class NPUModelRunner(GPUModelRunner):
                         block_table_tensor[:num_reqs * self.decode_threshold]
                 attn_state = AscendAttentionState.DecodeOnly
                 if self.speculative_config and \
-                        self.speculative_config.method == "mtp":
+                        (self.speculative_config.method == "mtp" or self.speculative_config.method == 'eagle3'):
                     attn_state = AscendAttentionState.SpecDecoding
 
                 if vllm_version_is("0.12.0"):
@@ -1914,13 +1915,15 @@ class NPUModelRunner(GPUModelRunner):
 
                 for attn_group in self.attn_groups[kv_cache_group_id]:
                     builder = attn_group.get_metadata_builder()
+                    if isinstance(builder, AscendAttentionMetadataBuilder):
+                        attn_state = AscendAttentionState.DecodeOnly
                     if isinstance(builder, GDNAttentionMetadataBuilder):
                         attn_metadata_gdn_attention = builder.build_for_cudagraph_capture(
                             common_metadata)
                     else:
                         attn_metadata_full_attention = builder.build_for_graph_capture(
                             common_attn_metadata, attn_state, self.get_model())
-                    for layer_name in kv_cache_group_spec.layer_names:
+                    for layer_name in attn_group.layer_names:
                         if "linear_attn" in layer_name:
                             attn_metadata[
                                 layer_name] = attn_metadata_gdn_attention
@@ -2375,7 +2378,11 @@ class NPUModelRunner(GPUModelRunner):
 
                     dsa_k_cache_factor = None
                     dsa_k_cache_size = None
-                    if not self.model_config.use_mla:
+                    eagle_layer = self.vllm_config.model_config.hf_config.num_hidden_layers
+                    if not self.model_config.use_mla or (self.speculative_config and 
+                                                        self.speculative_config.method == "eagle3" and 
+                                                        self.vllm_config.model_config.hf_config.model_type == "deepseek_v3" and 
+                                                        str(eagle_layer) in kv_cache_tensor.shared_by[0]):
                         # for non-mla model, use FullAttentionSpec
                         k_tensor_split_factor = 2
                         v_tensor_split_factor = 2
@@ -2523,16 +2530,21 @@ class NPUModelRunner(GPUModelRunner):
                         k_shape = kv_cache_shape[1:]
                         v_shape = k_shape
                     else:
-                        # k_cache: nope_cache    v_cache: rope_cache
-                        mla_num_blocks, mla_block_size, num_kv_heads, _ = kv_cache_shape
-                        k_shape = [
-                            mla_num_blocks, mla_block_size, num_kv_heads,
-                            self.model_config.hf_text_config.kv_lora_rank
-                        ]
-                        v_shape = [
-                            mla_num_blocks, mla_block_size, num_kv_heads,
-                            self.model_config.hf_text_config.qk_rope_head_dim
-                        ]
+                        eagle_layer = self.vllm_config.model_config.hf_config.num_hidden_layers
+                        if self.speculative_config and self.speculative_config.method == 'eagle3' and str(eagle_layer) in layer_name:
+                            k_shape = kv_cache_shape
+                            v_shape = k_shape
+                        else:
+                            # k_cache: nope_cache    v_cache: rope_cache
+                            mla_num_blocks, mla_block_size, num_kv_heads, _ = kv_cache_shape
+                            k_shape = [
+                                mla_num_blocks, mla_block_size, num_kv_heads,
+                                self.model_config.hf_text_config.kv_lora_rank
+                            ]
+                            v_shape = [
+                                mla_num_blocks, mla_block_size, num_kv_heads,
+                                self.model_config.hf_text_config.qk_rope_head_dim
+                            ]
                     k_cache = raw_k_tensor.view(dtype).view(k_shape)
                     k_cache = self._convert_torch_format(k_cache)
                     v_cache = raw_v_tensor.view(dtype).view(v_shape)
@@ -2618,7 +2630,7 @@ class NPUModelRunner(GPUModelRunner):
             if isinstance(kv_cache_group.kv_cache_spec,
                           EncoderOnlyAttentionSpec):
                 continue
-            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec):
+            elif isinstance(kv_cache_group.kv_cache_spec, AttentionSpec) or isinstance(kv_cache_group.kv_cache_spec, UniformTypeKVCacheSpecs):
                 # This is an attention backend that supports virtual
                 # block splitting. Get the supported block sizes from
                 # the backend.
